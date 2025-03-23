@@ -1,6 +1,7 @@
 # Google-hack-2025
  
-EduZen is a web-based AI-powered platform for students, built to run in a browser and integrate with Google services.________________________________________
+EduZen is a web-based AI-powered platform for students, built to run in a browser and integrate with Google services.
+________________________________________
 📌 Revised Project Scope: AI Study Buddy & Well-Being Assistant (EduZen)
 EduZen is a lightweight AI-powered assistant designed to support students both academically and emotionally. Instead of building a complex learning management system, EduZen focuses on delivering core, meaningful features using Google AI technologies. The system offers two major components: an AI-Powered Study Companion and an AI-Powered Well-Being Assistant that work hand-in-hand to improve learning efficiency while reducing academic stress.
 ________________________________________
