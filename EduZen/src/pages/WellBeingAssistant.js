@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Container,
   Typography,
@@ -17,12 +17,20 @@ import {
 import SendIcon from '@mui/icons-material/Send';
 import SpaIcon from '@mui/icons-material/Spa';
 import TimerIcon from '@mui/icons-material/Timer';
+import { v4 as uuidv4 } from 'uuid';
+import { detectIntent } from '../services/dialogflow';
 
 const WellBeingAssistant = () => {
   const [message, setMessage] = useState('');
   const [chatHistory, setChatHistory] = useState([]);
   const [isBreathing, setIsBreathing] = useState(false);
   const [breathingCount, setBreathingCount] = useState(0);
+  const [sessionId, setSessionId] = useState('');
+
+  useEffect(() => {
+    // Create a unique session ID for this chat session
+    setSessionId(uuidv4());
+  }, []);
 
   const handleMessageSend = async () => {
     if (!message.trim()) return;
@@ -31,14 +39,33 @@ const WellBeingAssistant = () => {
     const userMessage = { text: message, sender: 'user', timestamp: new Date() };
     setChatHistory(prev => [...prev, userMessage]);
 
-    // TODO: Implement Dialogflow chat processing
-    // For now, we'll add a simple response
-    const assistantMessage = {
-      text: "I understand you're feeling stressed. Would you like to try a quick breathing exercise?",
-      sender: 'assistant',
-      timestamp: new Date()
-    };
-    setChatHistory(prev => [...prev, assistantMessage]);
+    try {
+      // Get response from Dialogflow
+      const response = await detectIntent(message, sessionId);
+      
+      // Add assistant's response to chat
+      const assistantMessage = {
+        text: response.text,
+        sender: 'assistant',
+        timestamp: new Date(),
+        intent: response.intent
+      };
+      setChatHistory(prev => [...prev, assistantMessage]);
+
+      // Handle specific intents
+      if (response.intent === 'Stress_Management' && response.text.includes('breathing exercise')) {
+        startBreathingExercise();
+      }
+    } catch (error) {
+      console.error('Error processing message:', error);
+      const errorMessage = {
+        text: "I'm having trouble connecting right now. Please try again in a moment.",
+        sender: 'assistant',
+        timestamp: new Date()
+      };
+      setChatHistory(prev => [...prev, errorMessage]);
+    }
+
     setMessage('');
   };
 
