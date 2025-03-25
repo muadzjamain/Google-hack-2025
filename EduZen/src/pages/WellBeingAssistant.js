@@ -13,12 +13,17 @@ import {
   ListItem,
   ListItemText,
   Divider,
+  LinearProgress
 } from '@mui/material';
 import SendIcon from '@mui/icons-material/Send';
 import SpaIcon from '@mui/icons-material/Spa';
 import TimerIcon from '@mui/icons-material/Timer';
 import { v4 as uuidv4 } from 'uuid';
 import { detectIntent } from '../services/dialogflow';
+import { analyzeSentiment } from '../services/sentiment';
+import { scheduleStudySession } from '../services/google';
+import { DateTimePicker } from '@mui/lab';
+import { addMinutes } from 'date-fns';
 
 const WellBeingAssistant = () => {
   const [message, setMessage] = useState('');
@@ -26,6 +31,11 @@ const WellBeingAssistant = () => {
   const [isBreathing, setIsBreathing] = useState(false);
   const [breathingCount, setBreathingCount] = useState(0);
   const [sessionId, setSessionId] = useState('');
+  const [selectedDate, setSelectedDate] = useState(new Date());
+  const [stressLevel, setStressLevel] = useState(null);
+  const [showBreakPlanner, setShowBreakPlanner] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
 
   useEffect(() => {
     // Create a unique session ID for this chat session
@@ -35,11 +45,16 @@ const WellBeingAssistant = () => {
   const handleMessageSend = async () => {
     if (!message.trim()) return;
 
-    // Add user message to chat
-    const userMessage = { text: message, sender: 'user', timestamp: new Date() };
-    setChatHistory(prev => [...prev, userMessage]);
-
     try {
+      setError(null);
+      // Analyze sentiment first
+      const sentiment = await analyzeSentiment(message);
+      setStressLevel(sentiment.score);
+
+      // Add user message to chat
+      const userMessage = { text: message, sender: 'user', timestamp: new Date() };
+      setChatHistory(prev => [...prev, userMessage]);
+
       // Get response from Dialogflow
       const response = await detectIntent(message, sessionId);
       
@@ -52,14 +67,24 @@ const WellBeingAssistant = () => {
       };
       setChatHistory(prev => [...prev, assistantMessage]);
 
-      // Handle specific intents
-      if (response.intent === 'Stress_Management' && response.text.includes('breathing exercise')) {
+      // Handle specific intents and stress levels
+      if (sentiment.isStressed || response.intent === 'Stress_Management') {
         startBreathingExercise();
+      }
+
+      if (sentiment.isStressed && !showBreakPlanner) {
+        setShowBreakPlanner(true);
+        const breakMessage = {
+          text: "I notice you might be feeling stressed. Would you like to schedule a break? I can help you plan some rest time.",
+          sender: 'assistant',
+          timestamp: new Date()
+        };
+        setChatHistory(prev => [...prev, breakMessage]);
       }
     } catch (error) {
       console.error('Error processing message:', error);
       const errorMessage = {
-        text: "I'm having trouble connecting right now. Please try again in a moment.",
+        text: "I'm having trouble processing your message. Please try again.",
         sender: 'assistant',
         timestamp: new Date()
       };
@@ -83,6 +108,30 @@ const WellBeingAssistant = () => {
         return prev + 1;
       });
     }, 5000); // 5 seconds per breath
+  };
+
+  const scheduleBreak = async () => {
+    try {
+      setLoading(true);
+      const event = await scheduleStudySession(
+        'Scheduled Break - Rest & Recharge',
+        selectedDate,
+        addMinutes(selectedDate, 15)
+      );
+      
+      const confirmMessage = {
+        text: `I've scheduled a 15-minute break for you at ${selectedDate.toLocaleTimeString()}. Remember to take care of yourself!`,
+        sender: 'assistant',
+        timestamp: new Date()
+      };
+      setChatHistory(prev => [...prev, confirmMessage]);
+      setShowBreakPlanner(false);
+    } catch (error) {
+      console.error('Error scheduling break:', error);
+      setError('Failed to schedule break. Please try again.');
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -186,6 +235,54 @@ const WellBeingAssistant = () => {
               </Button>
             </CardContent>
           </Card>
+
+          {showBreakPlanner && (
+            <Card sx={{ mb: 3 }}>
+              <CardContent>
+                <Typography variant="h6" gutterBottom>
+                  Schedule a Break
+                </Typography>
+                <Box display="flex" flexDirection="column" gap={2}>
+                  <DateTimePicker
+                    label="Break Time"
+                    value={selectedDate}
+                    onChange={setSelectedDate}
+                    renderInput={(props) => <TextField {...props} />}
+                  />
+                  <Button
+                    variant="contained"
+                    color="secondary"
+                    onClick={scheduleBreak}
+                    disabled={loading}
+                  >
+                    Schedule 15min Break
+                  </Button>
+                </Box>
+              </CardContent>
+            </Card>
+          )}
+
+          {stressLevel !== null && (
+            <Card sx={{ mb: 3 }}>
+              <CardContent>
+                <Typography variant="h6" gutterBottom>
+                  Stress Level
+                </Typography>
+                <Box display="flex" alignItems="center" gap={1}>
+                  <Box flex={1}>
+                    <LinearProgress
+                      variant="determinate"
+                      value={(stressLevel + 1) * 50}
+                      color={stressLevel < -0.3 ? "error" : "success"}
+                    />
+                  </Box>
+                  <Typography variant="body2" color="textSecondary">
+                    {stressLevel < -0.3 ? "High" : stressLevel < 0 ? "Moderate" : "Low"}
+                  </Typography>
+                </Box>
+              </CardContent>
+            </Card>
+          )}
         </Box>
       </Box>
     </Container>
