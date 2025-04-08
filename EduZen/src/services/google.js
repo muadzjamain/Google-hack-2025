@@ -14,22 +14,49 @@ const SCOPES = [
 // Initialize the Google API client
 export const initGoogleApi = () => {
   return new Promise((resolve, reject) => {
-    const script = document.createElement('script');
-    script.src = 'https://apis.google.com/js/api.js';
-    script.onload = () => {
-      window.gapi.load('client:auth2', () => {
-        window.gapi.client
-          .init({
-            apiKey: API_KEY,
-            clientId: CLIENT_ID,
-            discoveryDocs: DISCOVERY_DOCS,
-            scope: SCOPES.join(' '),
-          })
-          .then(resolve)
-          .catch(reject);
-      });
-    };
-    document.body.appendChild(script);
+    try {
+      // Check if gapi is already loaded
+      if (window.gapi && window.gapi.client) {
+        console.log('Google API already loaded');
+        resolve();
+        return;
+      }
+
+      const script = document.createElement('script');
+      script.src = 'https://apis.google.com/js/api.js';
+      script.async = true;
+      script.defer = true;
+      
+      script.onload = () => {
+        window.gapi.load('client:auth2', () => {
+          window.gapi.client.init({
+            apiKey: process.env.REACT_APP_GOOGLE_API_KEY,
+            clientId: process.env.REACT_APP_GOOGLE_CLIENT_ID,
+            discoveryDocs: ['https://www.googleapis.com/discovery/v1/apis/calendar/v3/rest'],
+            scope: 'https://www.googleapis.com/auth/calendar'
+          }).then(() => {
+            console.log('Google API initialized');
+            resolve();
+          }).catch((error) => {
+            console.error('Error initializing Google APIs:', error);
+            // Still resolve to allow the app to function without Google features
+            resolve();
+          });
+        });
+      };
+      
+      script.onerror = (error) => {
+        console.error('Error loading Google API script:', error);
+        // Still resolve to allow the app to function without Google features
+        resolve();
+      };
+      
+      document.body.appendChild(script);
+    } catch (error) {
+      console.error('Error setting up Google API:', error);
+      // Still resolve to allow the app to function without Google features
+      resolve();
+    }
   });
 };
 
@@ -104,26 +131,79 @@ export const createGoogleForm = async (title, questions) => {
 };
 
 // Schedule study session in Calendar
-export const scheduleStudySession = async (summary, startTime, endTime) => {
+export const scheduleStudySession = async (summary, startTime, endTime, description = '') => {
   try {
+    // Check if Google API is available
+    if (!window.gapi || !window.gapi.client || !window.gapi.client.calendar) {
+      console.warn('Google Calendar API not available');
+      return { success: false, error: 'Google Calendar API not available' };
+    }
+
     const event = {
       summary: summary,
+      description: description,
       start: {
         dateTime: startTime.toISOString(),
       },
       end: {
         dateTime: endTime.toISOString(),
       },
+      colorId: "1", // Blue
+      reminders: {
+        useDefault: false,
+        overrides: [
+          { method: 'popup', minutes: 10 }
+        ]
+      }
     };
 
     const response = await window.gapi.client.calendar.events.insert({
       calendarId: 'primary',
-      resource: event,
+      resource: event
     });
 
-    return response.result;
+    return { success: true, event: response.result };
   } catch (error) {
     console.error('Error scheduling study session:', error);
-    throw error;
+    return { success: false, error: error.message || 'Unknown error' };
+  }
+};
+
+// Schedule a break in Calendar
+export const scheduleBreak = async (summary, startTime, endTime, description = '') => {
+  try {
+    // Check if Google API is available
+    if (!window.gapi || !window.gapi.client || !window.gapi.client.calendar) {
+      console.warn('Google Calendar API not available');
+      return { success: false, error: 'Google Calendar API not available' };
+    }
+
+    const event = {
+      summary: summary,
+      description: description,
+      start: {
+        dateTime: startTime.toISOString(),
+      },
+      end: {
+        dateTime: endTime.toISOString(),
+      },
+      colorId: "4", // Green
+      reminders: {
+        useDefault: false,
+        overrides: [
+          { method: 'popup', minutes: 1 }
+        ]
+      }
+    };
+
+    const response = await window.gapi.client.calendar.events.insert({
+      calendarId: 'primary',
+      resource: event
+    });
+
+    return { success: true, event: response.result };
+  } catch (error) {
+    console.error('Error scheduling break:', error);
+    return { success: false, error: error.message || 'Unknown error' };
   }
 };

@@ -16,17 +16,21 @@ import {
   Fade,
   Tooltip,
   Divider,
-  useTheme
+  useTheme,
+  Slider,
+  Snackbar,
+  Alert
 } from '@mui/material';
 import SendIcon from '@mui/icons-material/Send';
 import SpaIcon from '@mui/icons-material/Spa';
 import TimerIcon from '@mui/icons-material/Timer';
 import SmartToyIcon from '@mui/icons-material/SmartToy';
 import PersonIcon from '@mui/icons-material/Person';
+import CloseIcon from '@mui/icons-material/Close';
 import { v4 as uuidv4 } from 'uuid';
 import { getGeminiResponse } from '../services/gemini';
 import { analyzeSentiment } from '../services/sentiment';
-import { scheduleStudySession } from '../services/google';
+import { scheduleBreak } from '../services/google';
 import { addMinutes } from 'date-fns';
 
 const WellBeingAssistant = () => {
@@ -36,7 +40,12 @@ const WellBeingAssistant = () => {
   const [breathingCount, setBreathingCount] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [breakDuration, setBreakDuration] = useState(15);
+  const [showBreakSlider, setShowBreakSlider] = useState(false);
+  const [showSnackbar, setShowSnackbar] = useState(false);
+  const [snackbarMessage, setSnackbarMessage] = useState('');
   const chatEndRef = useRef(null);
+  const breakSliderRef = useRef(null);
   const theme = useTheme();
 
   useEffect(() => {
@@ -46,8 +55,11 @@ const WellBeingAssistant = () => {
 
   // Auto-scroll to bottom when chat updates
   useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [chatHistory]);
+    // Only auto-scroll if the user is not viewing the break slider
+    if (!showBreakSlider) {
+      chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [chatHistory, showBreakSlider]);
 
   const handleMessageSend = async () => {
     if (!message.trim()) return;
@@ -62,7 +74,7 @@ const WellBeingAssistant = () => {
       // Add user message to chat
       const userMessage = { 
         id: uuidv4(),
-        text: currentMessage, 
+        message: currentMessage, 
         sender: 'user', 
         timestamp: new Date() 
       };
@@ -80,7 +92,7 @@ const WellBeingAssistant = () => {
       // Add assistant's response to chat
       const assistantMessage = { 
         id: uuidv4(),
-        text: response, 
+        message: response, 
         sender: 'assistant', 
         timestamp: new Date() 
       };
@@ -98,7 +110,7 @@ const WellBeingAssistant = () => {
       // Add error message to chat
       const errorMessage = { 
         id: uuidv4(),
-        text: `Sorry, I encountered an error: ${error.message}`, 
+        message: `Sorry, I encountered an error: ${error.message}`, 
         sender: 'assistant', 
         timestamp: new Date(),
         isError: true 
@@ -122,22 +134,111 @@ const WellBeingAssistant = () => {
         return count + 1;
       });
     }, 5000); // 5 seconds per breath
+    
+    // Store the interval ID so we can clear it if canceled
+    window.breathingInterval = interval;
+  };
+  
+  const cancelBreathingExercise = () => {
+    if (window.breathingInterval) {
+      clearInterval(window.breathingInterval);
+    }
+    setIsBreathing(false);
+    setBreathingCount(0);
   };
 
   const handleBreakScheduling = async () => {
     try {
-      await scheduleStudySession(new Date(), addMinutes(new Date(), 15));
-      const message = {
-        id: uuidv4(),
-        text: 'Break scheduled successfully! I\'ve added a 15-minute break to your calendar.',
-        sender: 'assistant',
-        timestamp: new Date(),
-      };
-      setChatHistory(prev => [...prev, message]);
+      setLoading(true);
+      const startTime = new Date();
+      const endTime = addMinutes(startTime, breakDuration);
+      
+      const result = await scheduleBreak(
+        `Wellness Break (${breakDuration} min)`, 
+        startTime, 
+        endTime,
+        'Take time to relax and recharge.'
+      );
+      
+      if (result.success) {
+        setChatHistory(prev => [
+          ...prev,
+          {
+            id: uuidv4(),
+            sender: 'assistant',
+            message: `I've scheduled a ${breakDuration}-minute break for you starting now. You'll receive a notification when it's time to get back to studying.`,
+            timestamp: new Date()
+          }
+        ]);
+        
+        setSnackbarMessage('Break scheduled successfully!');
+        setShowSnackbar(true);
+      } else {
+        // Handle case where Google Calendar API is not available
+        setChatHistory(prev => [
+          ...prev,
+          {
+            id: uuidv4(),
+            sender: 'assistant',
+            message: `I recommend taking a ${breakDuration}-minute break starting now. Google Calendar integration is not available, but I'll still help you track your break time.`,
+            timestamp: new Date()
+          }
+        ]);
+        
+        setSnackbarMessage('Break timer started (without Calendar integration)');
+        setShowSnackbar(true);
+        
+        // Set a local timer for the break
+        setTimeout(() => {
+          setChatHistory(prev => [
+            ...prev,
+            {
+              id: uuidv4(),
+              sender: 'assistant',
+              message: `Your ${breakDuration}-minute break is now over. Ready to get back to studying?`,
+              timestamp: new Date()
+            }
+          ]);
+        }, breakDuration * 60 * 1000);
+      }
+      
+      setShowBreakSlider(false);
     } catch (error) {
-      console.error('Failed to schedule break:', error);
-      setError('Failed to schedule break');
+      console.error('Error scheduling break:', error);
+      setChatHistory(prev => [
+        ...prev,
+        {
+          id: uuidv4(),
+          sender: 'assistant',
+          message: `I encountered an error scheduling your break. Let's try a different approach for your wellness.`,
+          timestamp: new Date()
+        }
+      ]);
+    } finally {
+      setLoading(false);
     }
+  };
+
+  const toggleBreakSlider = () => {
+    setShowBreakSlider(!showBreakSlider);
+    
+    // If opening the slider, scroll to it after a short delay to allow for render
+    if (!showBreakSlider) {
+      setTimeout(() => {
+        breakSliderRef.current?.scrollIntoView({ 
+          behavior: 'smooth',
+          block: 'start'
+        });
+      }, 100);
+    }
+  };
+
+  const handleSliderChange = (event, newValue) => {
+    setBreakDuration(newValue);
+  };
+
+  const handleCloseSnackbar = () => {
+    setShowSnackbar(false);
   };
 
   return (
@@ -222,7 +323,7 @@ const WellBeingAssistant = () => {
                     }}
                   >
                     <CardContent sx={{ p: 2, '&:last-child': { pb: 2 } }}>
-                      <Typography variant="body1" sx={{ whiteSpace: 'pre-line' }}>{chat.text}</Typography>
+                      <Typography variant="body1" sx={{ whiteSpace: 'pre-line' }}>{chat.message}</Typography>
                       <Typography 
                         variant="caption" 
                         sx={{ 
@@ -277,9 +378,27 @@ const WellBeingAssistant = () => {
                 p: 3,
                 bgcolor: 'primary.light',
                 borderRadius: 2,
-                color: 'white'
+                color: 'white',
+                position: 'relative'
               }}
             >
+              <IconButton
+                aria-label="close breathing exercise"
+                onClick={cancelBreathingExercise}
+                sx={{
+                  position: 'absolute',
+                  right: 8,
+                  top: 8,
+                  color: 'white',
+                  bgcolor: 'rgba(255, 255, 255, 0.2)',
+                  '&:hover': {
+                    bgcolor: 'rgba(255, 255, 255, 0.3)',
+                  }
+                }}
+              >
+                <CloseIcon />
+              </IconButton>
+              
               <Typography variant="h6" gutterBottom>
                 Breathing Exercise
               </Typography>
@@ -392,11 +511,11 @@ const WellBeingAssistant = () => {
             Start Breathing Exercise
           </Button>
         </Tooltip>
-        <Tooltip title="Schedule a 15-minute break in your calendar">
+        <Tooltip title="Schedule a break in your calendar">
           <Button
             variant="contained"
             startIcon={<TimerIcon />}
-            onClick={handleBreakScheduling}
+            onClick={toggleBreakSlider}
             sx={{ 
               borderRadius: 3,
               py: 1.5,
@@ -411,6 +530,85 @@ const WellBeingAssistant = () => {
           </Button>
         </Tooltip>
       </Box>
+
+      {showBreakSlider && (
+        <Card 
+          ref={breakSliderRef}
+          sx={{ mt: 3, p: 3, borderRadius: 2, boxShadow: '0 4px 12px rgba(0, 0, 0, 0.1)' }}
+        >
+          <Typography variant="h6" gutterBottom>
+            Select Break Duration
+          </Typography>
+          <Box sx={{ px: 2, py: 3 }}>
+            <Slider
+              value={breakDuration}
+              onChange={handleSliderChange}
+              min={5}
+              max={60}
+              step={5}
+              marks={[
+                { value: 5, label: '5m' },
+                { value: 15, label: '15m' },
+                { value: 25, label: '25m' },
+                { value: 40, label: '40m' },
+                { value: 60, label: '1h' },
+              ]}
+              valueLabelDisplay="on"
+              sx={{
+                color: theme.palette.primary.main,
+                '& .MuiSlider-thumb': {
+                  height: 24,
+                  width: 24,
+                  backgroundColor: theme.palette.primary.main,
+                },
+                '& .MuiSlider-rail': {
+                  opacity: 0.5,
+                  backgroundColor: '#bfbfbf',
+                },
+                '& .MuiSlider-mark': {
+                  backgroundColor: '#bfbfbf',
+                  height: 8,
+                  width: 1,
+                  marginTop: -3,
+                },
+                '& .MuiSlider-markActive': {
+                  opacity: 1,
+                  backgroundColor: 'currentColor',
+                },
+              }}
+            />
+          </Box>
+          <Box sx={{ display: 'flex', justifyContent: 'center', mt: 2 }}>
+            <Button
+              variant="contained"
+              onClick={handleBreakScheduling}
+              disabled={loading}
+              sx={{ 
+                borderRadius: 3,
+                py: 1.5,
+                px: 4
+              }}
+            >
+              {loading ? 'Scheduling...' : `Schedule ${breakDuration}-minute Break`}
+            </Button>
+          </Box>
+        </Card>
+      )}
+
+      <Snackbar
+        open={showSnackbar}
+        autoHideDuration={6000}
+        onClose={handleCloseSnackbar}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
+      >
+        <Alert 
+          onClose={handleCloseSnackbar} 
+          severity="success" 
+          sx={{ width: '100%', borderRadius: 2 }}
+        >
+          {snackbarMessage}
+        </Alert>
+      </Snackbar>
     </Container>
   );
 };

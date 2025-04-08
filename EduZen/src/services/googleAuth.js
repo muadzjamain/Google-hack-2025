@@ -12,11 +12,24 @@ export const initializeGoogleServices = async () => {
 };
 
 export const checkGoogleAuthStatus = () => {
-  return window.gapi.auth2.getAuthInstance().isSignedIn.get();
+  try {
+    // Check if gapi is loaded and auth2 is initialized
+    if (window.gapi && window.gapi.auth2 && window.gapi.auth2.getAuthInstance()) {
+      return window.gapi.auth2.getAuthInstance().isSignedIn.get();
+    }
+    return false;
+  } catch (error) {
+    console.error('Error checking Google auth status:', error);
+    return false;
+  }
 };
 
 export const signInWithGoogle = async () => {
   try {
+    if (!window.gapi || !window.gapi.auth2) {
+      await initializeGoogleServices();
+    }
+    
     const auth2 = window.gapi.auth2.getAuthInstance();
     const user = await auth2.signIn();
     return user;
@@ -28,8 +41,10 @@ export const signInWithGoogle = async () => {
 
 export const signOutFromGoogle = async () => {
   try {
-    const auth2 = window.gapi.auth2.getAuthInstance();
-    await auth2.signOut();
+    if (window.gapi && window.gapi.auth2) {
+      const auth2 = window.gapi.auth2.getAuthInstance();
+      await auth2.signOut();
+    }
   } catch (error) {
     console.error('Error signing out from Google:', error);
     throw error;
