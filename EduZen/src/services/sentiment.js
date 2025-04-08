@@ -1,17 +1,27 @@
-import language from '@google-cloud/language';
-
-const client = new language.LanguageServiceClient({
-  apiKey: process.env.REACT_APP_GOOGLE_CLOUD_API_KEY,
-});
+const API_KEY = process.env.REACT_APP_GOOGLE_CLOUD_API_KEY;
+const API_ENDPOINT = 'https://language.googleapis.com/v1/documents:analyzeSentiment';
 
 export const analyzeSentiment = async (text) => {
   try {
-    const document = {
-      content: text,
-      type: 'PLAIN_TEXT',
-    };
+    const response = await fetch(`${API_ENDPOINT}?key=${API_KEY}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        document: {
+          content: text,
+          type: 'PLAIN_TEXT',
+        },
+        encodingType: 'UTF8',
+      }),
+    });
 
-    const [result] = await client.analyzeSentiment({ document });
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    const result = await response.json();
     const sentiment = result.documentSentiment;
 
     // Score ranges from -1.0 (negative) to 1.0 (positive)

@@ -1,38 +1,36 @@
-const dialogflow = require('@google-cloud/dialogflow');
-
 const projectId = process.env.REACT_APP_DIALOGFLOW_PROJECT_ID;
-const privateKey = process.env.REACT_APP_DIALOGFLOW_PRIVATE_KEY.replace(/\\n/g, '\n');
-const clientEmail = process.env.REACT_APP_DIALOGFLOW_CLIENT_EMAIL;
-
-const config = {
-  credentials: {
-    private_key: privateKey,
-    client_email: clientEmail,
-  },
-};
-
-const sessionClient = new dialogflow.SessionsClient(config);
+const apiKey = process.env.REACT_APP_GOOGLE_API_KEY;
 
 export const detectIntent = async (text, sessionId) => {
-  const sessionPath = sessionClient.projectAgentSessionPath(projectId, sessionId);
-
-  const request = {
-    session: sessionPath,
-    queryInput: {
-      text: {
-        text: text,
-        languageCode: 'en-US',
-      },
-    },
-  };
-
   try {
-    const responses = await sessionClient.detectIntent(request);
-    const result = responses[0].queryResult;
+    const response = await fetch(
+      `https://dialogflow.googleapis.com/v2/projects/${projectId}/agent/sessions/${sessionId}:detectIntent`,
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          queryInput: {
+            text: {
+              text: text,
+              languageCode: 'en-US',
+            },
+          },
+        }),
+      }
+    );
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    const result = await response.json();
     return {
-      text: result.fulfillmentText,
-      intent: result.intent.displayName,
-      confidence: result.intentDetectionConfidence,
+      text: result.queryResult.fulfillmentText,
+      intent: result.queryResult.intent.displayName,
+      confidence: result.queryResult.intentDetectionConfidence,
     };
   } catch (error) {
     console.error('Error detecting intent:', error);

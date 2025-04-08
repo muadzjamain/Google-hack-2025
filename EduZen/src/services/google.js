@@ -1,5 +1,3 @@
-import { google } from 'googleapis';
-
 const CLIENT_ID = process.env.REACT_APP_GOOGLE_CLIENT_ID;
 const API_KEY = process.env.REACT_APP_GOOGLE_API_KEY;
 const DISCOVERY_DOCS = [
@@ -51,9 +49,9 @@ export const exportToGoogleDocs = async (title, content) => {
       }],
     });
 
-    return document.documentId;
+    return document;
   } catch (error) {
-    console.error('Error exporting to Google Docs:', error);
+    console.error('Error creating Google Doc:', error);
     throw error;
   }
 };
@@ -73,18 +71,22 @@ export const createGoogleForm = async (title, questions) => {
     const requests = questions.map(question => ({
       createItem: {
         item: {
-          title: question.question,
+          title: question.text,
           questionItem: {
             question: {
               required: true,
               choiceQuestion: {
                 type: 'RADIO',
-                options: question.options.map(option => ({ value: option })),
+                options: question.options.map(option => ({
+                  value: option,
+                })),
               },
             },
           },
         },
-        location: { index: 0 },
+        location: {
+          index: 0,
+        },
       },
     }));
 
@@ -93,7 +95,7 @@ export const createGoogleForm = async (title, questions) => {
       requests: requests,
     });
 
-    return formId;
+    return form.result;
   } catch (error) {
     console.error('Error creating Google Form:', error);
     throw error;
@@ -108,11 +110,9 @@ export const scheduleStudySession = async (summary, startTime, endTime) => {
       summary: summary,
       start: {
         dateTime: startTime.toISOString(),
-        timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       },
       end: {
         dateTime: endTime.toISOString(),
-        timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       },
     };
 

@@ -1,19 +1,20 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
-import { ThemeProvider, createTheme } from '@mui/material/styles';
-import CssBaseline from '@mui/material/CssBaseline';
+import { initializeGoogleServices } from './services/googleAuth';
 import Navbar from './components/Navbar';
 import Home from './pages/Home';
 import StudyCompanion from './pages/StudyCompanion';
 import WellBeingAssistant from './pages/WellBeingAssistant';
+import { ThemeProvider, createTheme } from '@mui/material/styles';
+import CssBaseline from '@mui/material/CssBaseline';
 
 const theme = createTheme({
   palette: {
     primary: {
-      main: '#2196f3',
+      main: '#1976d2',
     },
     secondary: {
-      main: '#4caf50',
+      main: '#dc004e',
     },
     background: {
       default: '#f5f5f5',
@@ -22,6 +23,17 @@ const theme = createTheme({
 });
 
 function App() {
+  useEffect(() => {
+    const initServices = async () => {
+      try {
+        await initializeGoogleServices();
+      } catch (error) {
+        console.error('Failed to initialize Google services:', error);
+      }
+    };
+    initServices();
+  }, []);
+
   return (
     <ThemeProvider theme={theme}>
       <CssBaseline />
