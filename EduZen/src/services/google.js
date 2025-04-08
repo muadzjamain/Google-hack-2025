@@ -4,29 +4,32 @@ const DISCOVERY_DOCS = [
   'https://www.googleapis.com/discovery/v1/apis/drive/v3/rest',
   'https://www.googleapis.com/discovery/v1/apis/calendar/v3/rest',
   'https://www.googleapis.com/discovery/v1/apis/docs/v1/rest',
-  'https://www.googleapis.com/discovery/v1/apis/forms/v1/rest',
 ];
 const SCOPES = [
   'https://www.googleapis.com/auth/drive.file',
   'https://www.googleapis.com/auth/calendar.events',
   'https://www.googleapis.com/auth/documents',
-  'https://www.googleapis.com/auth/forms',
 ];
 
 // Initialize the Google API client
 export const initGoogleApi = () => {
   return new Promise((resolve, reject) => {
-    window.gapi.load('client:auth2', () => {
-      window.gapi.client
-        .init({
-          apiKey: API_KEY,
-          clientId: CLIENT_ID,
-          discoveryDocs: DISCOVERY_DOCS,
-          scope: SCOPES.join(' '),
-        })
-        .then(resolve)
-        .catch(reject);
-    });
+    const script = document.createElement('script');
+    script.src = 'https://apis.google.com/js/api.js';
+    script.onload = () => {
+      window.gapi.load('client:auth2', () => {
+        window.gapi.client
+          .init({
+            apiKey: API_KEY,
+            clientId: CLIENT_ID,
+            discoveryDocs: DISCOVERY_DOCS,
+            scope: SCOPES.join(' '),
+          })
+          .then(resolve)
+          .catch(reject);
+      });
+    };
+    document.body.appendChild(script);
   });
 };
 
@@ -59,43 +62,41 @@ export const exportToGoogleDocs = async (title, content) => {
 // Create quiz in Google Forms
 export const createGoogleForm = async (title, questions) => {
   try {
-    const forms = window.gapi.client.forms;
-    const form = await forms.create({
+    const form = {
       info: {
         title: title,
         documentTitle: title,
       },
-    });
+      items: questions.map((q, index) => ({
+        title: q.question,
+        questionItem: {
+          question: {
+            required: true,
+            choiceQuestion: {
+              type: 'RADIO',
+              options: q.options.map(option => ({
+                value: option
+              })),
+            }
+          }
+        }
+      }))
+    };
 
-    const formId = form.result.formId;
-    const requests = questions.map(question => ({
-      createItem: {
-        item: {
-          title: question.text,
-          questionItem: {
-            question: {
-              required: true,
-              choiceQuestion: {
-                type: 'RADIO',
-                options: question.options.map(option => ({
-                  value: option,
-                })),
-              },
-            },
-          },
-        },
-        location: {
-          index: 0,
-        },
+    const response = await fetch(`https://forms.googleapis.com/v1/forms?key=${API_KEY}`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${window.gapi.auth.getToken().access_token}`,
+        'Content-Type': 'application/json',
       },
-    }));
-
-    await forms.batchUpdate({
-      formId: formId,
-      requests: requests,
+      body: JSON.stringify(form)
     });
 
-    return form.result;
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    return await response.json();
   } catch (error) {
     console.error('Error creating Google Form:', error);
     throw error;
@@ -105,7 +106,6 @@ export const createGoogleForm = async (title, questions) => {
 // Schedule study session in Calendar
 export const scheduleStudySession = async (summary, startTime, endTime) => {
   try {
-    const calendar = window.gapi.client.calendar;
     const event = {
       summary: summary,
       start: {
@@ -116,7 +116,7 @@ export const scheduleStudySession = async (summary, startTime, endTime) => {
       },
     };
 
-    const response = await calendar.events.insert({
+    const response = await window.gapi.client.calendar.events.insert({
       calendarId: 'primary',
       resource: event,
     });

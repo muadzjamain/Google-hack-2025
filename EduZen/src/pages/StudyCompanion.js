@@ -42,9 +42,12 @@ const StudyCompanion = () => {
   const [isGoogleApiReady, setIsGoogleApiReady] = useState(false);
 
   useEffect(() => {
-    // Initialize Google API
+    // Initialize Google API and test AI connections
     initGoogleApi()
-      .then(() => setIsGoogleApiReady(true))
+      .then(() => {
+        setIsGoogleApiReady(true);
+        testAIConnections(); // Run the test when component mounts
+      })
       .catch(console.error);
   }, []);
 
@@ -55,53 +58,33 @@ const StudyCompanion = () => {
       setLoading(true);
       setError(null);
       const file = event.target.files[0];
-      const storageRef = ref(storage, `notes/${Date.now()}_${file.name}`);
-      await uploadBytes(storageRef, file);
-      const imageUrl = await getDownloadURL(storageRef);
-      setUploadedImage(imageUrl);
-      setActiveStep(1);
-      
-      // Automatically start text extraction
-      await extractText(imageUrl);
-    } catch (error) {
-      console.error('Error uploading image:', error);
-      setError('Failed to upload image. Please try again.');
-    } finally {
-      setLoading(false);
-    }
-  };
 
-  const extractText = async (imageUrl) => {
-    try {
-      setLoading(true);
-      setError(null);
-      const text = await extractTextFromImage(imageUrl || uploadedImage);
+      // Start text extraction immediately with the File object
+      const textExtractionPromise = extractTextFromImage(file);
+
+      // Upload to Firebase Storage in parallel
+      const storageRef = ref(storage, `notes/${Date.now()}_${file.name}`);
+      const uploadPromise = uploadBytes(storageRef).then(() => getDownloadURL(storageRef));
+
+      // Wait for both operations to complete
+      const [text, imageUrl] = await Promise.all([textExtractionPromise, uploadPromise]);
+
+      setUploadedImage(imageUrl);
       setExtractedText(text);
       setActiveStep(2);
-      
-      // Automatically start summary generation
-      await generateSummary(text);
-    } catch (error) {
-      console.error('Error extracting text:', error);
-      setError('Failed to extract text. Please try again.');
-    } finally {
-      setLoading(false);
-    }
-  };
 
-  const generateSummary = async (text) => {
-    try {
-      setLoading(true);
-      setError(null);
-      const generatedSummary = await summarizeText(text || extractedText);
+      // Start summary and quiz generation in parallel
+      const [generatedSummary, generatedQuiz] = await Promise.all([
+        summarizeText(text),
+        generateQuiz(text)
+      ]);
+
       setSummary(generatedSummary);
+      setQuiz(generatedQuiz);
       setActiveStep(3);
-      
-      // Automatically start quiz generation
-      await createQuiz(text || extractedText);
     } catch (error) {
-      console.error('Error generating summary:', error);
-      setError('Failed to generate summary. Please try again.');
+      console.error('Error processing image:', error);
+      setError('Failed to process image. Please try again.');
     } finally {
       setLoading(false);
     }
@@ -220,13 +203,6 @@ const StudyCompanion = () => {
                   <img src={uploadedImage} alt="Uploaded notes" style={{ maxWidth: '100%' }} />
                 </Box>
               )}
-              <Button
-                variant="contained"
-                onClick={() => extractText()}
-                disabled={loading || !uploadedImage}
-              >
-                Start Text Extraction
-              </Button>
             </CardContent>
           </Card>
         );
@@ -245,13 +221,6 @@ const StudyCompanion = () => {
                   <Typography>{extractedText}</Typography>
                 </Box>
               )}
-              <Button
-                variant="contained"
-                onClick={() => generateSummary()}
-                disabled={loading || !extractedText}
-              >
-                Generate Summary
-              </Button>
             </CardContent>
           </Card>
         );
@@ -274,6 +243,61 @@ const StudyCompanion = () => {
         );
       default:
         return null;
+    }
+  };
+
+  const testAIConnections = async () => {
+    setLoading(true);
+    setError(null);
+    const results = {
+      vision: false,
+      gemini: false,
+      dialogflow: false
+    };
+    
+    try {
+      // Test Vision API
+      await fetch(`https://vision.googleapis.com/v1/images:annotate?key=${process.env.REACT_APP_GOOGLE_CLOUD_VISION_API_KEY}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          requests: [{ features: [{ type: 'TEXT_DETECTION', maxResults: 1 }] }]
+        })
+      }).then(res => {
+        results.vision = res.status !== 401; // If not unauthorized, API key is valid
+      });
+
+      // Test Gemini API
+      await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${process.env.REACT_APP_GOOGLE_GEMINI_API_KEY}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: 'test' }] }]
+        })
+      }).then(res => {
+        results.gemini = res.status !== 401;
+      });
+
+      // Test Dialogflow API
+      await fetch(`https://dialogflow.googleapis.com/v2/projects/${process.env.REACT_APP_DIALOGFLOW_PROJECT_ID}/agent/sessions/test:detectIntent?key=${process.env.REACT_APP_GOOGLE_API_KEY}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          queryInput: { text: { text: 'test', languageCode: 'en-US' } }
+        })
+      }).then(res => {
+        results.dialogflow = res.status !== 401;
+      });
+
+      setError(`AI Connection Status:
+Vision API: ${results.vision ? '✅' : '❌'}
+Gemini API: ${results.gemini ? '✅' : '❌'}
+Dialogflow: ${results.dialogflow ? '✅' : '❌'}`);
+    } catch (error) {
+      console.error('Error testing AI connections:', error);
+      setError('Failed to test AI connections. Check console for details.');
+    } finally {
+      setLoading(false);
     }
   };
 
