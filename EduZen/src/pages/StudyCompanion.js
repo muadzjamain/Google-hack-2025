@@ -252,7 +252,6 @@ const StudyCompanion = () => {
     const results = {
       vision: false,
       gemini: false,
-      dialogflow: false
     };
     
     try {
@@ -278,21 +277,9 @@ const StudyCompanion = () => {
         results.gemini = res.status !== 401;
       });
 
-      // Test Dialogflow API
-      await fetch(`https://dialogflow.googleapis.com/v2/projects/${process.env.REACT_APP_DIALOGFLOW_PROJECT_ID}/agent/sessions/test:detectIntent?key=${process.env.REACT_APP_GOOGLE_API_KEY}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          queryInput: { text: { text: 'test', languageCode: 'en-US' } }
-        })
-      }).then(res => {
-        results.dialogflow = res.status !== 401;
-      });
-
       setError(`AI Connection Status:
 Vision API: ${results.vision ? '✅' : '❌'}
-Gemini API: ${results.gemini ? '✅' : '❌'}
-Dialogflow: ${results.dialogflow ? '✅' : '❌'}`);
+Gemini API: ${results.gemini ? '✅' : '❌'}`);
     } catch (error) {
       console.error('Error testing AI connections:', error);
       setError('Failed to test AI connections. Check console for details.');
