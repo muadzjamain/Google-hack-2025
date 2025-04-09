@@ -64,7 +64,15 @@ node_modules/
 
 # Environment and credentials
 .env
+.env.local
+.env.development
+.env.test
+.env.production
 service-account.json
+
+# Build directory
+build/
+dist/
 
 # dataconnect generated files
 .dataconnect
