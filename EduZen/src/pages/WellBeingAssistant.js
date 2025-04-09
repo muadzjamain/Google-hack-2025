@@ -30,7 +30,6 @@ import CloseIcon from '@mui/icons-material/Close';
 import { v4 as uuidv4 } from 'uuid';
 import { getGeminiResponse } from '../services/gemini';
 import { analyzeSentiment } from '../services/sentiment';
-import { scheduleBreak } from '../services/google';
 import { addMinutes } from 'date-fns';
 
 const WellBeingAssistant = () => {
@@ -44,13 +43,35 @@ const WellBeingAssistant = () => {
   const [showBreakSlider, setShowBreakSlider] = useState(false);
   const [showSnackbar, setShowSnackbar] = useState(false);
   const [snackbarMessage, setSnackbarMessage] = useState('');
+  const [isSchedulingBreak, setIsSchedulingBreak] = useState(false);
+  const [schedulingError, setSchedulingError] = useState(null);
+  const [activeBreakTimer, setActiveBreakTimer] = useState(null);
+  const [breakEndTime, setBreakEndTime] = useState(null);
   const chatEndRef = useRef(null);
   const breakSliderRef = useRef(null);
   const theme = useTheme();
+  const audioRef = useRef(null);
 
   useEffect(() => {
     setIsBreathing(false);
     setBreathingCount(0);
+    
+    // Create audio element for beep sound
+    audioRef.current = new Audio('https://assets.coderrocketfuel.com/pomodoro-times-up.mp3');
+    audioRef.current.volume = 0.7;
+    
+    return () => {
+      // Cleanup audio on component unmount
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current = null;
+      }
+      
+      // Clear any active break timers
+      if (activeBreakTimer) {
+        clearTimeout(activeBreakTimer);
+      }
+    };
   }, []);
 
   // Auto-scroll to bottom when chat updates
@@ -60,6 +81,100 @@ const WellBeingAssistant = () => {
       chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }
   }, [chatHistory, showBreakSlider]);
+
+  // Update break timer countdown
+  useEffect(() => {
+    if (!breakEndTime) return;
+    
+    const intervalId = setInterval(() => {
+      const now = new Date();
+      const timeLeft = breakEndTime - now;
+      
+      if (timeLeft <= 0) {
+        clearInterval(intervalId);
+      } else {
+        // Force re-render to update countdown
+        setBreakEndTime(prev => new Date(prev.getTime()));
+      }
+    }, 1000);
+    
+    return () => clearInterval(intervalId);
+  }, [breakEndTime]);
+
+  // Format text by removing markdown formatting
+  const formatText = (text) => {
+    if (!text) return '';
+    
+    // Remove bold formatting
+    let formatted = text.replace(/\*\*(.*?)\*\*/g, '$1');
+    
+    // Remove italic formatting
+    formatted = formatted.replace(/\*(.*?)\*/g, '$1');
+    
+    // Remove code blocks
+    formatted = formatted.replace(/```(.*?)```/gs, '$1');
+    
+    // Remove inline code
+    formatted = formatted.replace(/`(.*?)`/g, '$1');
+    
+    // Remove headers
+    formatted = formatted.replace(/#{1,6}\s+(.+)/g, '$1');
+    
+    return formatted;
+  };
+
+  const playBeepSound = () => {
+    if (!audioRef.current) return;
+    
+    let beepCount = 0;
+    
+    const playNextBeep = () => {
+      if (beepCount < 6) {
+        audioRef.current.play();
+        beepCount++;
+        
+        audioRef.current.onended = () => {
+          // Add a small delay between beeps
+          setTimeout(playNextBeep, 500);
+        };
+      } else {
+        // Add a message to the chat when beeps are done
+        const notificationMessage = {
+          id: uuidv4(),
+          message: "Your break time has ended! Time to get back to studying.",
+          sender: 'assistant',
+          timestamp: new Date(),
+          isNotification: true
+        };
+        
+        setChatHistory(prev => [...prev, notificationMessage]);
+      }
+    };
+    
+    playNextBeep();
+  };
+
+  const startBreakTimer = (durationMinutes) => {
+    // Calculate end time
+    const endTime = new Date(Date.now() + durationMinutes * 60 * 1000);
+    setBreakEndTime(endTime);
+    
+    // Set a timeout to play the beep sound when the break ends
+    const timerId = setTimeout(() => {
+      playBeepSound();
+      setBreakEndTime(null);
+      setActiveBreakTimer(null);
+      
+      // Show a snackbar notification
+      setSnackbarMessage('Break time is over!');
+      setShowSnackbar(true);
+    }, durationMinutes * 60 * 1000);
+    
+    setActiveBreakTimer(timerId);
+    
+    // Return the timer ID so it can be cleared if needed
+    return timerId;
+  };
 
   const handleMessageSend = async () => {
     if (!message.trim()) return;
@@ -74,7 +189,7 @@ const WellBeingAssistant = () => {
       // Add user message to chat
       const userMessage = { 
         id: uuidv4(),
-        message: currentMessage, 
+        message: formatText(currentMessage), 
         sender: 'user', 
         timestamp: new Date() 
       };
@@ -92,7 +207,7 @@ const WellBeingAssistant = () => {
       // Add assistant's response to chat
       const assistantMessage = { 
         id: uuidv4(),
-        message: response, 
+        message: formatText(response), 
         sender: 'assistant', 
         timestamp: new Date() 
       };
@@ -148,74 +263,122 @@ const WellBeingAssistant = () => {
   };
 
   const handleBreakScheduling = async () => {
+    setIsSchedulingBreak(true);
+    setSchedulingError(null);
+    
     try {
-      setLoading(true);
-      const startTime = new Date();
-      const endTime = addMinutes(startTime, breakDuration);
-      
-      const result = await scheduleBreak(
-        `Wellness Break (${breakDuration} min)`, 
-        startTime, 
-        endTime,
-        'Take time to relax and recharge.'
-      );
-      
-      if (result.success) {
-        setChatHistory(prev => [
-          ...prev,
-          {
-            id: uuidv4(),
-            sender: 'assistant',
-            message: `I've scheduled a ${breakDuration}-minute break for you starting now. You'll receive a notification when it's time to get back to studying.`,
-            timestamp: new Date()
-          }
-        ]);
-        
-        setSnackbarMessage('Break scheduled successfully!');
-        setShowSnackbar(true);
-      } else {
-        // Handle case where Google Calendar API is not available
-        setChatHistory(prev => [
-          ...prev,
-          {
-            id: uuidv4(),
-            sender: 'assistant',
-            message: `I recommend taking a ${breakDuration}-minute break starting now. Google Calendar integration is not available, but I'll still help you track your break time.`,
-            timestamp: new Date()
-          }
-        ]);
-        
-        setSnackbarMessage('Break timer started (without Calendar integration)');
-        setShowSnackbar(true);
-        
-        // Set a local timer for the break
-        setTimeout(() => {
-          setChatHistory(prev => [
-            ...prev,
-            {
-              id: uuidv4(),
-              sender: 'assistant',
-              message: `Your ${breakDuration}-minute break is now over. Ready to get back to studying?`,
-              timestamp: new Date()
-            }
-          ]);
-        }, breakDuration * 60 * 1000);
+      // Get the break duration in minutes
+      const breakDurationMinutes = parseInt(breakDuration, 10);
+      if (isNaN(breakDurationMinutes) || breakDurationMinutes <= 0) {
+        throw new Error('Please enter a valid break duration');
       }
       
+      // Calculate break end time
+      const startTime = new Date();
+      const endTime = new Date(startTime.getTime() + breakDurationMinutes * 60000);
+      
+      // Format times for display
+      const formatTime = (date) => {
+        return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      };
+      
+      // Try to use Google Calendar if available
+      let calendarEventCreated = false;
+      
+      if (window.gapi && window.gapi.client && window.gapi.client.calendar) {
+        try {
+          console.log('Attempting to schedule break with Google Calendar');
+          
+          // Check if we have the calendar API loaded
+          if (!window.gapi.client.calendar) {
+            await window.gapi.client.load('calendar', 'v3');
+          }
+          
+          // Create the calendar event
+          const event = {
+            'summary': 'Study Break',
+            'description': 'Time to take a break from studying and recharge!',
+            'start': {
+              'dateTime': startTime.toISOString(),
+              'timeZone': Intl.DateTimeFormat().resolvedOptions().timeZone
+            },
+            'end': {
+              'dateTime': endTime.toISOString(),
+              'timeZone': Intl.DateTimeFormat().resolvedOptions().timeZone
+            },
+            'reminders': {
+              'useDefault': false,
+              'overrides': [
+                {'method': 'popup', 'minutes': 0}
+              ]
+            }
+          };
+          
+          const request = window.gapi.client.calendar.events.insert({
+            'calendarId': 'primary',
+            'resource': event
+          });
+          
+          const response = await new Promise((resolve, reject) => {
+            request.execute(resp => {
+              if (resp.error) {
+                reject(resp.error);
+              } else {
+                resolve(resp);
+              }
+            });
+          });
+          
+          console.log('Google Calendar event created:', response);
+          calendarEventCreated = true;
+          
+          // Add the event to chat
+          const newMessage = {
+            id: Date.now(),
+            sender: 'assistant',
+            message: `I've scheduled a ${breakDurationMinutes} minute break for you starting now (${formatTime(startTime)}) until ${formatTime(endTime)}. I've also added this to your Google Calendar. You'll hear 6 beeps when your break time is over.`,
+            timestamp: new Date().toISOString()
+          };
+          
+          setChatHistory(prev => [...prev, newMessage]);
+          
+          // Start the break timer
+          startBreakTimer(breakDurationMinutes);
+          
+        } catch (error) {
+          console.error('Error scheduling with Google Calendar:', error);
+          // Fall back to local timer
+          calendarEventCreated = false;
+        }
+      }
+      
+      // If Google Calendar failed or isn't available, use local timer
+      if (!calendarEventCreated) {
+        console.log('Using local break timer');
+        
+        // Add the event to chat
+        const newMessage = {
+          id: Date.now(),
+          sender: 'assistant',
+          message: `I've scheduled a ${breakDurationMinutes} minute break for you starting now (${formatTime(startTime)}) until ${formatTime(endTime)}. You'll hear 6 beeps when your break time is over.`,
+          timestamp: new Date().toISOString()
+        };
+        
+        setChatHistory(prev => [...prev, newMessage]);
+        
+        // Start the break timer
+        startBreakTimer(breakDurationMinutes);
+      }
+      
+      // Clear the input and hide the slider
+      setBreakDuration(15);
       setShowBreakSlider(false);
+      
     } catch (error) {
       console.error('Error scheduling break:', error);
-      setChatHistory(prev => [
-        ...prev,
-        {
-          id: uuidv4(),
-          sender: 'assistant',
-          message: `I encountered an error scheduling your break. Let's try a different approach for your wellness.`,
-          timestamp: new Date()
-        }
-      ]);
+      setSchedulingError(error.message || 'Failed to schedule break');
     } finally {
-      setLoading(false);
+      setIsSchedulingBreak(false);
     }
   };
 
@@ -267,6 +430,41 @@ const WellBeingAssistant = () => {
         </Typography>
         
         <Divider sx={{ mb: 3 }} />
+        
+        {/* Active Break Timer */}
+        {breakEndTime && (
+          <Fade in={true}>
+            <Paper
+              elevation={2}
+              sx={{
+                p: 2,
+                mb: 3,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                bgcolor: theme.palette.primary.light,
+                color: 'white',
+                borderRadius: 2
+              }}
+            >
+              <Box sx={{ display: 'flex', alignItems: 'center' }}>
+                <TimerIcon sx={{ mr: 1 }} />
+                <Typography variant="subtitle1">
+                  Break Time Remaining:
+                </Typography>
+              </Box>
+              <Typography variant="h6" sx={{ fontWeight: 'bold' }}>
+                {(() => {
+                  const now = new Date();
+                  const diff = Math.max(0, breakEndTime - now);
+                  const minutes = Math.floor(diff / 60000);
+                  const seconds = Math.floor((diff % 60000) / 1000);
+                  return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+                })()}
+              </Typography>
+            </Paper>
+          </Fade>
+        )}
         
         {/* Chat history */}
         <Box 
@@ -323,7 +521,7 @@ const WellBeingAssistant = () => {
                     }}
                   >
                     <CardContent sx={{ p: 2, '&:last-child': { pb: 2 } }}>
-                      <Typography variant="body1" sx={{ whiteSpace: 'pre-line' }}>{chat.message}</Typography>
+                      <Typography variant="body1" sx={{ whiteSpace: 'pre-line' }}>{formatText(chat.message)}</Typography>
                       <Typography 
                         variant="caption" 
                         sx={{ 
@@ -377,7 +575,6 @@ const WellBeingAssistant = () => {
                 my: 2,
                 p: 3,
                 bgcolor: 'primary.light',
-                borderRadius: 2,
                 color: 'white',
                 position: 'relative'
               }}
@@ -582,14 +779,14 @@ const WellBeingAssistant = () => {
             <Button
               variant="contained"
               onClick={handleBreakScheduling}
-              disabled={loading}
+              disabled={isSchedulingBreak}
               sx={{ 
                 borderRadius: 3,
                 py: 1.5,
                 px: 4
               }}
             >
-              {loading ? 'Scheduling...' : `Schedule ${breakDuration}-minute Break`}
+              {isSchedulingBreak ? 'Scheduling...' : `Schedule ${breakDuration}-minute Break`}
             </Button>
           </Box>
         </Card>

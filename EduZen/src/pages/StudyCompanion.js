@@ -8,31 +8,27 @@ import {
   Grid,
   TextField,
   CircularProgress,
+  Tabs,
+  Tab,
+  Card,
+  CardContent,
+  CardMedia,
+  IconButton,
+  Dialog,
+  DialogContent,
+  DialogTitle,
+  DialogActions,
+  Divider,
   Stepper,
   Step,
   StepLabel,
   Alert,
-  Card,
-  CardContent,
-  CardMedia,
-  List,
-  ListItem,
-  ListItemIcon,
-  ListItemText,
-  Dialog,
-  DialogTitle,
-  DialogContent,
-  DialogActions,
-  IconButton,
-  Divider,
-  Tooltip,
-  Fade,
-  Tabs,
-  Tab,
+  Snackbar,
   FormControl,
-  RadioGroup,
   FormControlLabel,
-  Radio
+  Radio,
+  RadioGroup,
+  Tooltip
 } from '@mui/material';
 import CloudUploadIcon from '@mui/icons-material/CloudUpload';
 import CameraAltIcon from '@mui/icons-material/CameraAlt';
@@ -41,45 +37,89 @@ import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import PhotoCameraIcon from '@mui/icons-material/PhotoCamera';
 import CloseIcon from '@mui/icons-material/Close';
 import ImageIcon from '@mui/icons-material/Image';
+import PictureAsPdfIcon from '@mui/icons-material/PictureAsPdf';
+import SummarizeIcon from '@mui/icons-material/Summarize';
+import QuizIcon from '@mui/icons-material/Quiz';
+import FormatListBulletedIcon from '@mui/icons-material/FormatListBulleted';
+import CalendarMonthIcon from '@mui/icons-material/CalendarMonth';
 import { storage, db } from '../firebase';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { collection, addDoc } from 'firebase/firestore';
-import { extractTextFromImage } from '../services/vision';
-import { summarizeText, generateQuiz } from '../services/gemini';
-import { exportToGoogleDocs, createGoogleForm, initGoogleApi } from '../services/google';
-import { addHours } from 'date-fns';
-import BreakScheduler from '../components/BreakScheduler';
+import { 
+  analyzeImageWithGemini, 
+  summarizeText, 
+  generateQuiz, 
+  formatText, 
+  summarizePDFWithGemini, 
+  generatePDFQuiz,
+  analyzePDFWithGemini,
+  generatePDFStudyPlan
+} from '../services/gemini';
+import { extractTextFromPDF, getPDFMetadata } from '../services/pdfExtractor';
+import { checkGoogleAuthStatus } from '../services/googleAuth';
+import StudyPlanGenerator from '../components/StudyPlanGenerator';
 
 const StudyCompanion = () => {
-  const [activeStep, setActiveStep] = useState(0);
+  // Main state for the workflow
+  const [activeTab, setActiveTab] = useState(0);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [success, setSuccess] = useState(null);
+  const [statusMessage, setStatusMessage] = useState('');
+  
+  // Content upload states
+  const [uploadType, setUploadType] = useState('image'); // 'image', 'camera', 'pdf'
   const [uploadedFile, setUploadedFile] = useState(null);
-  const [fileType, setFileType] = useState(null); // 'image' or null
   const [fileUrl, setFileUrl] = useState(null);
+  const [cameraOpen, setCameraOpen] = useState(false);
+  
+  // Content analysis states
   const [extractedText, setExtractedText] = useState('');
   const [summary, setSummary] = useState('');
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  
+  // Quiz states
   const [quiz, setQuiz] = useState([]);
   const [selectedAnswers, setSelectedAnswers] = useState({});
   const [quizSubmitted, setQuizSubmitted] = useState(false);
-  const [error, setError] = useState(null);
-  const [selectedDate, setSelectedDate] = useState(new Date());
-  const [isGoogleApiReady, setIsGoogleApiReady] = useState(false);
-  const [activeTab, setActiveTab] = useState(0);
-  const [cameraOpen, setCameraOpen] = useState(false);
+  const [quizScore, setQuizScore] = useState(null);
+  
+  // Refs
+  const fileInputRef = useRef(null);
+  const pdfInputRef = useRef(null);
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
-  const fileInputRef = useRef(null);
+  
+  // Format text by removing ** markers
+  const formatText = (text) => {
+    if (!text) return '';
+    return text.replace(/\*\*(.*?)\*\*/g, '$1');
+  };
 
+  // Initialize Google API
   useEffect(() => {
-    // Initialize Google API and test AI connections
-    initGoogleApi()
-      .then(() => {
-        setIsGoogleApiReady(true);
-        testAIConnections(); // Run the test when component mounts
-      })
-      .catch(console.error);
+    const initializeGoogleApi = async () => {
+      try {
+        // await initGoogleApi();
+        // setIsGoogleApiReady(true);
+        
+        // Check if user is signed in
+        const signedIn = await checkGoogleAuthStatus();
+        // setIsGoogleSignedIn(signedIn);
+      } catch (error) {
+        console.error('Error initializing Google API:', error);
+        // Don't block the app if Google API fails
+        setError('Google API initialization failed. Some features may be limited.');
+      }
+    };
+    
+    // Try to initialize Google API but don't block the app functionality
+    initializeGoogleApi().catch(err => {
+      console.error('Failed to initialize Google API:', err);
+      // We'll still allow the app to function without Google API
+    });
   }, []);
-
+  
   // Clean up camera resources when component unmounts
   useEffect(() => {
     return () => {
@@ -90,87 +130,42 @@ const StudyCompanion = () => {
     };
   }, []);
 
-  const steps = ['Upload Content', 'Extract Text', 'Generate Summary', 'Create Quiz'];
-
+  // Tab handling
   const handleTabChange = (event, newValue) => {
     setActiveTab(newValue);
   };
 
-  const handleFileUpload = async (event) => {
-    try {
-      setLoading(true);
-      setError(null);
-      const file = event.target.files[0];
-      
-      if (!file) return;
-
-      // Only accept image files for now
-      const isImage = file.type.startsWith('image/');
-      
-      if (!isImage) {
-        setError('Please upload an image file.');
-        setLoading(false);
-        return;
-      }
-
-      setFileType('image');
-      setUploadedFile(file);
-
-      // Create a URL for preview
-      const fileObjectUrl = URL.createObjectURL(file);
-      setFileUrl(fileObjectUrl);
-      
-      // Move to extraction step to show progress
-      setActiveStep(1);
-      setExtractedText("Extracting text from your image...");
-
-      // Upload to Firebase Storage
-      const storageRef = ref(storage, `notes/${Date.now()}_${file.name}`);
-      await uploadBytes(storageRef, file);
-      const downloadUrl = await getDownloadURL(storageRef);
-
-      // Extract text from image
-      try {
-        const text = await extractTextFromImage(file);
-        if (!text || text.trim() === '') {
-          setExtractedText("No text could be extracted from this image. Please try with a clearer image or different content.");
-          setError("No text detected in the image. Please try with a clearer image.");
-          setLoading(false);
-          return;
-        }
-        setExtractedText(text);
-      } catch (error) {
-        console.error('Error extracting text:', error);
-        setError('Failed to extract text from image. Please try with a clearer image.');
-        setLoading(false);
-        return;
-      }
-
-      // Move to summary step
-      setActiveStep(2);
-
-      // Start summary and quiz generation in parallel
-      try {
-        const [generatedSummary, generatedQuiz] = await Promise.all([
-          summarizeText(extractedText),
-          generateQuiz(extractedText)
-        ]);
-
-        setSummary(generatedSummary);
-        setQuiz(generatedQuiz);
-        setActiveStep(3);
-      } catch (error) {
-        console.error('Error generating summary or quiz:', error);
-        setError('Failed to generate summary or quiz. Please try again.');
-      }
-    } catch (error) {
-      console.error('Error processing file:', error);
-      setError('Failed to process file. Please try again.');
-    } finally {
-      setLoading(false);
+  // File upload handlers
+  const handleImageUpload = (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
+    
+    if (!file.type.startsWith('image/')) {
+      setError('Please upload a valid image file.');
+      return;
     }
+    
+    setUploadType('image');
+    setUploadedFile(file);
+    setFileUrl(URL.createObjectURL(file));
+    setSuccess('Image uploaded successfully! Click "Analyze Content" to proceed.');
   };
-
+  
+  const handlePdfUpload = (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
+    
+    if (file.type !== 'application/pdf') {
+      setError('Please upload a valid PDF file.');
+      return;
+    }
+    
+    setUploadType('pdf');
+    setUploadedFile(file);
+    setFileUrl(URL.createObjectURL(file));
+    setSuccess('PDF uploaded successfully! Click "Analyze Content" to proceed.');
+  };
+  
   const handleCameraCapture = async () => {
     setCameraOpen(true);
     try {
@@ -184,67 +179,41 @@ const StudyCompanion = () => {
       setCameraOpen(false);
     }
   };
-
+  
   const takePicture = async () => {
     if (!videoRef.current || !canvasRef.current) return;
-
+    
     const video = videoRef.current;
     const canvas = canvasRef.current;
     const context = canvas.getContext('2d');
-
+    
     // Set canvas dimensions to match video
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
-
+    
     // Draw video frame to canvas
     context.drawImage(video, 0, 0, canvas.width, canvas.height);
-
+    
     // Convert canvas to blob
     canvas.toBlob(async (blob) => {
       try {
-        setLoading(true);
-        setError(null);
-        
         // Create a file from the blob
         const file = new File([blob], `camera_capture_${Date.now()}.jpg`, { type: 'image/jpeg' });
         
-        setFileType('image');
+        setUploadType('image');
         setUploadedFile(file);
-
-        // Create a URL for preview
-        const fileObjectUrl = URL.createObjectURL(file);
-        setFileUrl(fileObjectUrl);
-
-        // Upload to Firebase Storage
-        const storageRef = ref(storage, `notes/${Date.now()}_${file.name}`);
-        await uploadBytes(storageRef, file);
-        const downloadUrl = await getDownloadURL(storageRef);
-
-        // Extract text
-        const text = await extractTextFromImage(file);
-        setExtractedText(text);
-        setActiveStep(2);
-
-        // Start summary and quiz generation in parallel
-        const [generatedSummary, generatedQuiz] = await Promise.all([
-          summarizeText(text),
-          generateQuiz(text)
-        ]);
-
-        setSummary(generatedSummary);
-        setQuiz(generatedQuiz);
-        setActiveStep(3);
+        setFileUrl(URL.createObjectURL(file));
+        setSuccess('Image captured successfully! Click "Analyze Content" to proceed.');
+        
+        // Close camera dialog
+        closeCameraDialog();
       } catch (error) {
         console.error('Error processing camera image:', error);
         setError('Failed to process camera image. Please try again.');
-      } finally {
-        setLoading(false);
-        // Close camera dialog and stop camera stream
-        closeCameraDialog();
       }
     }, 'image/jpeg', 0.95);
   };
-
+  
   const closeCameraDialog = () => {
     setCameraOpen(false);
     // Stop camera stream
@@ -254,454 +223,802 @@ const StudyCompanion = () => {
       videoRef.current.srcObject = null;
     }
   };
-
-  const createQuiz = async (text) => {
+  
+  // Content analysis
+  const analyzeContent = async () => {
+    if (!uploadedFile) {
+      setError('Please upload a file first');
+      return;
+    }
+    
     try {
       setLoading(true);
+      setIsAnalyzing(true);
       setError(null);
-      const generatedQuiz = await generateQuiz(text || extractedText);
+      
+      // Get download URL from Firebase Storage
+      let downloadUrl = '';
+      try {
+        setStatusMessage('Uploading to secure storage...');
+        const storageRef = ref(storage, `study_materials/${Date.now()}_${uploadedFile.name}`);
+        const snapshot = await uploadBytes(storageRef, uploadedFile);
+        downloadUrl = await getDownloadURL(snapshot.ref);
+        console.log('Uploaded file to Firebase Storage:', snapshot);
+        console.log('Download URL:', downloadUrl);
+      } catch (error) {
+        console.error('Error uploading to Firebase Storage:', error);
+        // Continue with local file handling if Firebase upload fails
+      }
+      
+      // Analyze content based on file type
+      let text = '';
+      
+      if (uploadType === 'image') {
+        // Analyze image with Gemini
+        setStatusMessage('Analyzing image content...');
+        text = await analyzeImageWithGemini(uploadedFile);
+      } else if (uploadType === 'pdf') {
+        try {
+          // Use Gemini Vision API to analyze the PDF directly
+          setStatusMessage('Analyzing PDF with Gemini Vision API...');
+          text = await analyzePDFWithGemini(uploadedFile);
+          
+          // Get PDF metadata for additional context
+          const metadata = await getPDFMetadata(uploadedFile);
+          console.log('PDF Metadata:', metadata);
+          
+          if (text.trim().length === 0) {
+            text = 'The PDF analysis did not return any content. The file might be empty, corrupted, or contain only images that could not be processed.';
+          }
+        } catch (error) {
+          console.error('Error analyzing PDF with Gemini:', error);
+          text = 'Failed to analyze the PDF with Gemini Vision API. The file might be too large, corrupted, or in an unsupported format.';
+        }
+      }
+      
+      // Format text to remove ** markers
+      text = formatText(text);
+      setExtractedText(text);
+      
+      // Generate summary
+      let generatedSummary = '';
+      try {
+        setStatusMessage('Generating summary...');
+        if (uploadType === 'pdf') {
+          // For PDFs, the analyzePDFWithGemini already provides a summary
+          generatedSummary = text;
+        } else {
+          generatedSummary = await summarizeText(text);
+        }
+        generatedSummary = formatText(generatedSummary);
+      } catch (error) {
+        console.error('Error generating summary:', error);
+        generatedSummary = 'Failed to generate summary. Please try again.';
+      }
+      setSummary(generatedSummary);
+      
+      // Generate quiz
+      let generatedQuiz = [];
+      try {
+        setStatusMessage('Creating quiz questions...');
+        if (uploadType === 'pdf') {
+          generatedQuiz = await generatePDFQuiz(text);
+        } else {
+          generatedQuiz = await generateQuiz(text);
+        }
+        console.log('Generated quiz questions:', generatedQuiz.length);
+      } catch (error) {
+        console.error('Error generating quiz:', error);
+        // Create a simple fallback quiz if generation fails
+        generatedQuiz = [
+          {
+            question: 'What was the main topic of the content you uploaded?',
+            options: ['Option A', 'Option B', 'Option C', 'Option D'],
+            correctAnswer: 0
+          }
+        ];
+      }
       setQuiz(generatedQuiz);
       
-      // Save study session to Firestore
-      await addDoc(collection(db, 'studySessions'), {
-        timestamp: new Date(),
-        fileUrl: fileUrl,
-        fileType: fileType,
-        extractedText: text || extractedText,
-        summary: summary,
-        quiz: generatedQuiz,
-      });
+      // Try to save to Firestore, but don't block if it fails
+      try {
+        setStatusMessage('Saving your study session...');
+        if (downloadUrl) {
+          const docRef = await addDoc(collection(db, 'studySessions'), {
+            timestamp: new Date(),
+            fileUrl: downloadUrl,
+            fileType: uploadType,
+            fileName: uploadedFile.name,
+            fileSize: uploadedFile.size,
+            extractedText: text,
+            summary: generatedSummary,
+            quiz: generatedQuiz,
+          });
+          console.log('Document written with ID:', docRef.id);
+        }
+      } catch (error) {
+        console.error('Error saving to Firestore:', error);
+        // Continue even if Firestore save fails
+      }
+      
+      // Show success message and navigate to summary tab
+      setSuccess('Content analyzed successfully!');
+      setActiveTab(1);
+      
+      // Clear success message after 3 seconds
+      setTimeout(() => {
+        setSuccess(null);
+      }, 3000);
+      
     } catch (error) {
-      console.error('Error generating quiz:', error);
-      setError('Failed to generate quiz. Please try again.');
+      console.error('Error analyzing content:', error);
+      setError('Failed to analyze content. Please try again.');
     } finally {
       setLoading(false);
+      setIsAnalyzing(false);
+      setStatusMessage('');
     }
   };
-
+  
+  // Quiz handling
   const handleAnswerSelect = (questionIndex, answerIndex) => {
     setSelectedAnswers(prev => ({
       ...prev,
       [questionIndex]: answerIndex
     }));
   };
-
+  
   const handleQuizSubmit = () => {
-    setQuizSubmitted(true);
-  };
-
-  const calculateScore = () => {
+    // Calculate score
     let correct = 0;
     quiz.forEach((question, index) => {
       if (selectedAnswers[index] === question.correctAnswer) {
         correct++;
       }
     });
-    return (correct / quiz.length) * 100;
-  };
-
-  const handleExportToGoogleDocs = async () => {
-    try {
-      setLoading(true);
-      setError(null);
-      const docId = await exportToGoogleDocs(
-        'Study Notes Summary',
-        `Original Text:\n${extractedText}\n\nSummary:\n${summary}`
-      );
-      // Open the document in a new tab
-      window.open(`https://docs.google.com/document/d/${docId}/edit`, '_blank');
-    } catch (error) {
-      console.error('Error exporting to Google Docs:', error);
-      setError('Failed to export to Google Docs. Please try again.');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleCreateGoogleForm = async () => {
-    try {
-      setLoading(true);
-      setError(null);
-      const formId = await createGoogleForm('Study Quiz', quiz);
-      // Open the form in a new tab
-      window.open(`https://docs.google.com/forms/d/${formId}/edit`, '_blank');
-    } catch (error) {
-      console.error('Error creating Google Form:', error);
-      setError('Failed to create Google Form. Please try again.');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const renderStepContent = (step) => {
-    switch (step) {
-      case 0:
-        return (
-          <Box sx={{ width: '100%', mt: 3 }}>
-            <Paper sx={{ p: 3, borderRadius: 2, boxShadow: 3 }}>
-              <Typography variant="h5" gutterBottom align="center" color="primary">
-                Upload Study Material
-              </Typography>
-              
-              <Tabs 
-                value={activeTab} 
-                onChange={handleTabChange} 
-                centered 
-                sx={{ mb: 3 }}
-                indicatorColor="primary"
-              >
-                <Tab icon={<ImageIcon />} label="Image" />
-                <Tab icon={<CameraAltIcon />} label="Camera" />
-              </Tabs>
-              
-              {activeTab === 0 && (
-                <Box textAlign="center" p={3}>
-                  <input
-                    type="file"
-                    accept="image/*"
-                    style={{ display: 'none' }}
-                    id="image-upload"
-                    ref={fileInputRef}
-                    onChange={handleFileUpload}
-                  />
-                  <label htmlFor="image-upload">
-                    <Button
-                      variant="contained"
-                      component="span"
-                      startIcon={<CloudUploadIcon />}
-                      size="large"
-                      sx={{ 
-                        py: 1.5, 
-                        px: 4,
-                        borderRadius: '20px',
-                        boxShadow: '0 4px 8px rgba(0, 0, 0, 0.1)'
-                      }}
-                    >
-                      Upload Image
-                    </Button>
-                  </label>
-                  
-                  <Typography variant="body2" color="textSecondary" sx={{ mt: 2 }}>
-                    Upload images of your notes, textbooks, or study materials
-                  </Typography>
-                </Box>
-              )}
-              
-              {activeTab === 1 && (
-                <Box textAlign="center" p={3}>
-                  <Button
-                    variant="contained"
-                    onClick={handleCameraCapture}
-                    startIcon={<CameraAltIcon />}
-                    size="large"
-                    sx={{ 
-                      py: 1.5, 
-                      px: 4,
-                      borderRadius: '20px',
-                      boxShadow: '0 4px 8px rgba(0, 0, 0, 0.1)'
-                    }}
-                  >
-                    Capture with Camera
-                  </Button>
-                  
-                  <Typography variant="body2" color="textSecondary" sx={{ mt: 2 }}>
-                    Take a picture of your notes or textbook using your device's camera
-                  </Typography>
-                </Box>
-              )}
-              
-              {fileUrl && (
-                <Box mt={3} textAlign="center">
-                  <Typography variant="subtitle1" gutterBottom>
-                    Preview:
-                  </Typography>
-                  <Box sx={{ mt: 2, position: 'relative', display: 'inline-block' }}>
-                    <img 
-                      src={fileUrl} 
-                      alt="Uploaded content" 
-                      style={{ 
-                        maxWidth: '100%', 
-                        maxHeight: '300px',
-                        borderRadius: '8px',
-                        boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)'
-                      }} 
-                    />
-                    <IconButton 
-                      size="small" 
-                      sx={{ 
-                        position: 'absolute', 
-                        top: 5, 
-                        right: 5, 
-                        bgcolor: 'rgba(255,255,255,0.8)',
-                        '&:hover': { bgcolor: 'rgba(255,255,255,0.9)' }
-                      }}
-                      onClick={() => {
-                        setFileUrl(null);
-                        setUploadedFile(null);
-                        setFileType(null);
-                      }}
-                    >
-                      <CloseIcon fontSize="small" />
-                    </IconButton>
-                  </Box>
-                </Box>
-              )}
-              
-              {fileUrl && (
-                <Box mt={3} textAlign="center">
-                  <Button
-                    variant="contained"
-                    color="primary"
-                    onClick={() => setActiveStep(1)}
-                    disabled={loading}
-                    sx={{ 
-                      py: 1.2, 
-                      px: 4,
-                      borderRadius: '20px'
-                    }}
-                  >
-                    Process Image
-                  </Button>
-                </Box>
-              )}
-            </Paper>
-          </Box>
-        );
-      case 1:
-        return (
-          <Card sx={{ p: 3, borderRadius: 2, boxShadow: 3 }}>
-            <CardContent>
-              <Typography variant="h6" gutterBottom>
-                Extracting Text...
-              </Typography>
-              {fileUrl && (
-                <Box sx={{ mt: 2, textAlign: 'center' }}>
-                  <img 
-                    src={fileUrl} 
-                    alt="Uploaded content" 
-                    style={{ 
-                      maxWidth: '100%', 
-                      maxHeight: '200px',
-                      borderRadius: '8px'
-                    }} 
-                  />
-                </Box>
-              )}
-              <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', mt: 3 }}>
-                <CircularProgress size={40} />
-                <Typography variant="body2" color="text.secondary" sx={{ mt: 2 }}>
-                  This may take 10-20 seconds depending on the image complexity...
-                </Typography>
-              </Box>
-            </CardContent>
-          </Card>
-        );
-      case 2:
-        return (
-          <Card sx={{ p: 3, borderRadius: 2, boxShadow: 3 }}>
-            <CardContent>
-              <Typography variant="h6" gutterBottom>
-                Generated Summary
-              </Typography>
-              <Paper elevation={0} sx={{ p: 2, bgcolor: 'background.default', borderRadius: 2, mt: 2 }}>
-                <Typography variant="body1">{summary || 'Generating summary...'}</Typography>
-              </Paper>
-              
-              <Box sx={{ mt: 3 }}>
-                <Typography variant="h6" gutterBottom>
-                  Extracted Text
-                </Typography>
-                <Paper elevation={0} sx={{ p: 2, bgcolor: 'background.default', borderRadius: 2, maxHeight: '200px', overflow: 'auto' }}>
-                  <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>
-                    {extractedText}
-                  </Typography>
-                </Paper>
-              </Box>
-              
-              <Box sx={{ display: 'flex', justifyContent: 'center', mt: 3, gap: 2 }}>
-                <Button
-                  variant="outlined"
-                  onClick={handleExportToGoogleDocs}
-                  disabled={!isGoogleApiReady || loading || !summary}
-                  sx={{ borderRadius: '20px' }}
-                >
-                  Export to Google Docs
-                </Button>
-                <Button
-                  variant="contained"
-                  onClick={() => createQuiz(extractedText)}
-                  disabled={loading || !extractedText}
-                  sx={{ borderRadius: '20px' }}
-                >
-                  Generate Quiz
-                </Button>
-              </Box>
-            </CardContent>
-          </Card>
-        );
-      case 3:
-        return (
-          <Card sx={{ p: 3, borderRadius: 2, boxShadow: 3 }}>
-            <CardContent>
-              <Typography variant="h6" gutterBottom>
-                Study Quiz
-              </Typography>
-              
-              {quiz.length > 0 ? (
-                <>
-                  {quiz.map((question, qIndex) => (
-                    <Card key={qIndex} sx={{ mb: 3, p: 2, borderRadius: 2 }}>
-                      <Typography variant="subtitle1" gutterBottom>
-                        {qIndex + 1}. {question.question}
-                      </Typography>
-                      <FormControl component="fieldset" sx={{ ml: 2 }}>
-                        <RadioGroup>
-                          {question.options.map((option, oIndex) => (
-                            <FormControlLabel
-                              key={oIndex}
-                              value={oIndex.toString()}
-                              control={
-                                <Radio 
-                                  checked={selectedAnswers[qIndex] === oIndex}
-                                  onChange={() => handleAnswerSelect(qIndex, oIndex)}
-                                  disabled={quizSubmitted}
-                                />
-                              }
-                              label={option}
-                              sx={{
-                                ...(quizSubmitted && oIndex === question.correctAnswer && {
-                                  color: 'success.main',
-                                  fontWeight: 'bold',
-                                }),
-                                ...(quizSubmitted && 
-                                  selectedAnswers[qIndex] === oIndex && 
-                                  oIndex !== question.correctAnswer && {
-                                    color: 'error.main',
-                                  }),
-                              }}
-                            />
-                          ))}
-                        </RadioGroup>
-                      </FormControl>
-                    </Card>
-                  ))}
-                  
-                  <Box sx={{ display: 'flex', justifyContent: 'center', mt: 3, gap: 2 }}>
-                    {!quizSubmitted ? (
-                      <Button
-                        variant="contained"
-                        onClick={handleQuizSubmit}
-                        disabled={Object.keys(selectedAnswers).length !== quiz.length}
-                        sx={{ borderRadius: '20px' }}
-                      >
-                        Submit Quiz
-                      </Button>
-                    ) : (
-                      <>
-                        <Typography variant="h6" color={calculateScore() >= 70 ? 'success.main' : 'error.main'}>
-                          Your Score: {calculateScore().toFixed(0)}%
-                        </Typography>
-                        <Button
-                          variant="outlined"
-                          onClick={handleCreateGoogleForm}
-                          disabled={!isGoogleApiReady || loading}
-                          sx={{ ml: 2, borderRadius: '20px' }}
-                        >
-                          Export to Google Forms
-                        </Button>
-                      </>
-                    )}
-                  </Box>
-                </>
-              ) : (
-                <Box sx={{ display: 'flex', justifyContent: 'center', p: 4 }}>
-                  <CircularProgress />
-                </Box>
-              )}
-            </CardContent>
-          </Card>
-        );
-      default:
-        return null;
-    }
-  };
-
-  // Test AI connections
-  const testAIConnections = async () => {
-    const results = {
-      vision: false,
-      gemini: false,
-    };
     
-    try {
-      // Test Vision API
-      await fetch(`https://vision.googleapis.com/v1/images:annotate?key=${process.env.REACT_APP_GOOGLE_CLOUD_VISION_API_KEY}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          requests: [{ 
-            image: { content: '' },
-            features: [{ type: 'TEXT_DETECTION' }]
-          }]
-        })
-      }).then(res => {
-        results.vision = res.status !== 401;
-      });
-
-      // Test Gemini API
-      await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash?key=${process.env.REACT_APP_GOOGLE_GEMINI_API_KEY}`).then(res => {
-        results.gemini = res.status !== 401;
-      });
-
-      setError(`AI Connection Status:
-Vision API: ${results.vision ? '✅' : '❌'}
-Gemini API: ${results.gemini ? '✅' : '❌'}`);
-    } catch (error) {
-      console.error('Error testing AI connections:', error);
-      setError('Failed to test AI connections. Check console for details.');
-    }
+    const score = (correct / quiz.length) * 100;
+    setQuizScore(score);
+    setQuizSubmitted(true);
+    setSuccess(`Quiz submitted! Your score: ${score.toFixed(2)}%`);
   };
-
+  
+  const resetQuiz = () => {
+    setSelectedAnswers({});
+    setQuizSubmitted(false);
+    setQuizScore(null);
+  };
+  
+  // Render the main UI
   return (
     <Container maxWidth="md" sx={{ mt: 4, mb: 4 }}>
-      <Paper elevation={3} sx={{ p: 4, borderRadius: 2, boxShadow: '0 8px 32px rgba(0, 0, 0, 0.1)' }}>
-        <Typography variant="h4" gutterBottom sx={{ display: 'flex', alignItems: 'center', color: 'primary.main' }}>
-          <SchoolIcon sx={{ mr: 1, fontSize: 32 }} />
+      <Paper elevation={3} sx={{ 
+        p: 4, 
+        borderRadius: 2, 
+        boxShadow: '0 8px 32px rgba(0, 0, 0, 0.1)',
+        overflow: 'hidden'
+      }}>
+        <Typography variant="h4" component="h1" gutterBottom align="center" sx={{ 
+          color: '#4285F4', 
+          fontWeight: 500,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          mb: 3
+        }}>
+          <SchoolIcon sx={{ mr: 1, fontSize: 36 }} />
           AI Study Companion
         </Typography>
         
-        <Typography variant="body1" paragraph sx={{ color: 'text.secondary', mb: 4 }}>
-          Upload your study materials or capture images with your camera. 
-          Our AI will extract the text, generate a summary, and create a quiz to help you study.
+        <Typography variant="body1" paragraph align="center" sx={{ mb: 4 }}>
+          Upload your study materials or capture images with your camera. Our AI will extract the text, generate a summary, and create a quiz to help you study.
         </Typography>
         
+        {/* Error and success messages */}
         {error && (
-          <Alert severity={error.includes('✅') ? 'info' : 'error'} sx={{ mb: 3 }}>
+          <Alert severity="error" sx={{ mb: 3 }} onClose={() => setError(null)}>
             {error}
           </Alert>
         )}
         
-        <Stepper activeStep={activeStep} sx={{ mb: 4 }}>
-          {steps.map((label) => (
-            <Step key={label}>
-              <StepLabel>{label}</StepLabel>
-            </Step>
-          ))}
-        </Stepper>
-        
-        {loading && activeStep !== 1 && (
-          <Box sx={{ display: 'flex', justifyContent: 'center', my: 3 }}>
-            <CircularProgress />
-          </Box>
+        {success && (
+          <Alert severity="success" sx={{ mb: 3 }} onClose={() => setSuccess(null)}>
+            {success}
+          </Alert>
         )}
         
-        {renderStepContent(activeStep)}
+        {statusMessage && (
+          <Alert severity="info" sx={{ mb: 3 }}>
+            {statusMessage}
+          </Alert>
+        )}
+        
+        {/* Main tabs */}
+        <Box sx={{ borderBottom: 1, borderColor: 'divider', mb: 3 }}>
+          <Tabs 
+            value={activeTab} 
+            onChange={handleTabChange} 
+            aria-label="study companion tabs"
+            variant="fullWidth"
+            sx={{
+              '& .MuiTab-root': {
+                borderRadius: '20px 20px 0 0',
+                minHeight: '64px',
+                fontWeight: 500,
+              },
+              '& .Mui-selected': {
+                color: '#4285F4',
+                fontWeight: 600,
+              },
+              '& .MuiTabs-indicator': {
+                backgroundColor: '#4285F4',
+                height: 3,
+              }
+            }}
+          >
+            <Tab 
+              icon={<CloudUploadIcon />} 
+              label="Upload Content" 
+              id="tab-0" 
+              aria-controls="tabpanel-0" 
+            />
+            <Tab 
+              icon={<SummarizeIcon />} 
+              label="Summary" 
+              id="tab-1" 
+              aria-controls="tabpanel-1"
+              disabled={!summary} 
+            />
+            <Tab 
+              icon={<QuizIcon />} 
+              label="Quiz" 
+              id="tab-2" 
+              aria-controls="tabpanel-2"
+              disabled={!quiz.length} 
+            />
+            <Tab 
+              icon={<CalendarMonthIcon />} 
+              label="Study Plan" 
+              id="tab-3" 
+              aria-controls="tabpanel-3"
+              disabled={!summary} 
+            />
+          </Tabs>
+        </Box>
+        
+        {/* Tab panels */}
+        <Box role="tabpanel" hidden={activeTab !== 0} id="tabpanel-0" aria-labelledby="tab-0">
+          {activeTab === 0 && (
+            <Box>
+              <Grid container spacing={3} justifyContent="center">
+                {/* Upload options */}
+                <Grid item xs={12} md={4}>
+                  <Card 
+                    elevation={2} 
+                    sx={{ 
+                      height: '100%', 
+                      display: 'flex', 
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      cursor: 'pointer',
+                      transition: 'all 0.3s',
+                      '&:hover': {
+                        transform: 'translateY(-5px)',
+                        boxShadow: '0 12px 20px rgba(0, 0, 0, 0.1)'
+                      },
+                      border: uploadType === 'image' ? '2px solid #4285F4' : 'none',
+                      borderRadius: '20px'
+                    }}
+                    onClick={() => fileInputRef.current?.click()}
+                  >
+                    <CardContent sx={{ textAlign: 'center', p: 3 }}>
+                      <Box 
+                        sx={{ 
+                          backgroundColor: 'rgba(66, 133, 244, 0.1)', 
+                          borderRadius: '50%', 
+                          width: 80, 
+                          height: 80, 
+                          display: 'flex', 
+                          alignItems: 'center', 
+                          justifyContent: 'center',
+                          margin: '0 auto 16px'
+                        }}
+                      >
+                        <ImageIcon sx={{ fontSize: 40, color: '#4285F4' }} />
+                      </Box>
+                      <Typography variant="h6" component="div" gutterBottom>
+                        Upload Image
+                      </Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        Upload an image of your notes, textbook, or other study materials
+                      </Typography>
+                      <input
+                        ref={fileInputRef}
+                        type="file"
+                        accept="image/*"
+                        style={{ display: 'none' }}
+                        onChange={handleImageUpload}
+                      />
+                    </CardContent>
+                  </Card>
+                </Grid>
+                
+                <Grid item xs={12} md={4}>
+                  <Card 
+                    elevation={2} 
+                    sx={{ 
+                      height: '100%', 
+                      display: 'flex', 
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      cursor: 'pointer',
+                      transition: 'all 0.3s',
+                      '&:hover': {
+                        transform: 'translateY(-5px)',
+                        boxShadow: '0 12px 20px rgba(0, 0, 0, 0.1)'
+                      },
+                      borderRadius: '20px'
+                    }}
+                    onClick={handleCameraCapture}
+                  >
+                    <CardContent sx={{ textAlign: 'center', p: 3 }}>
+                      <Box 
+                        sx={{ 
+                          backgroundColor: 'rgba(52, 168, 83, 0.1)', 
+                          borderRadius: '50%', 
+                          width: 80, 
+                          height: 80, 
+                          display: 'flex', 
+                          alignItems: 'center', 
+                          justifyContent: 'center',
+                          margin: '0 auto 16px'
+                        }}
+                      >
+                        <CameraAltIcon sx={{ fontSize: 40, color: '#34A853' }} />
+                      </Box>
+                      <Typography variant="h6" component="div" gutterBottom>
+                        Capture Image
+                      </Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        Take a photo of your notes or textbook using your camera
+                      </Typography>
+                    </CardContent>
+                  </Card>
+                </Grid>
+                
+                <Grid item xs={12} md={4}>
+                  <Card 
+                    elevation={2} 
+                    sx={{ 
+                      height: '100%', 
+                      display: 'flex', 
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      cursor: 'pointer',
+                      transition: 'all 0.3s',
+                      '&:hover': {
+                        transform: 'translateY(-5px)',
+                        boxShadow: '0 12px 20px rgba(0, 0, 0, 0.1)'
+                      },
+                      border: uploadType === 'pdf' ? '2px solid #4285F4' : 'none',
+                      borderRadius: '20px'
+                    }}
+                    onClick={() => pdfInputRef.current?.click()}
+                  >
+                    <CardContent sx={{ textAlign: 'center', p: 3 }}>
+                      <Box 
+                        sx={{ 
+                          backgroundColor: 'rgba(234, 67, 53, 0.1)', 
+                          borderRadius: '50%', 
+                          width: 80, 
+                          height: 80, 
+                          display: 'flex', 
+                          alignItems: 'center', 
+                          justifyContent: 'center',
+                          margin: '0 auto 16px'
+                        }}
+                      >
+                        <PictureAsPdfIcon sx={{ fontSize: 40, color: '#EA4335' }} />
+                      </Box>
+                      <Typography variant="h6" component="div" gutterBottom>
+                        Upload PDF
+                      </Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        Upload a PDF document of your study materials
+                      </Typography>
+                      <input
+                        ref={pdfInputRef}
+                        type="file"
+                        accept="application/pdf"
+                        style={{ display: 'none' }}
+                        onChange={handlePdfUpload}
+                      />
+                    </CardContent>
+                  </Card>
+                </Grid>
+              </Grid>
+              
+              {/* Preview and analyze section */}
+              {fileUrl && (
+                <Box sx={{ mt: 4, textAlign: 'center' }}>
+                  <Paper 
+                    elevation={2} 
+                    sx={{ 
+                      p: 2, 
+                      position: 'relative',
+                      borderRadius: '20px',
+                      overflow: 'hidden',
+                      mb: 3
+                    }}
+                  >
+                    <IconButton
+                      size="small"
+                      sx={{ 
+                        position: 'absolute', 
+                        top: 8, 
+                        right: 8, 
+                        bgcolor: 'rgba(0,0,0,0.1)',
+                        '&:hover': {
+                          bgcolor: 'rgba(0,0,0,0.2)'
+                        }
+                      }}
+                      onClick={() => {
+                        setFileUrl(null);
+                        setUploadedFile(null);
+                        setUploadType(null);
+                      }}
+                    >
+                      <CloseIcon fontSize="small" />
+                    </IconButton>
+                    
+                    {uploadType === 'image' && (
+                      <img 
+                        src={fileUrl} 
+                        alt="Uploaded content" 
+                        style={{ 
+                          maxWidth: '100%', 
+                          maxHeight: '400px',
+                          borderRadius: '12px'
+                        }} 
+                      />
+                    )}
+                    
+                    {uploadType === 'pdf' && (
+                      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', p: 3 }}>
+                        <PictureAsPdfIcon sx={{ fontSize: 60, color: '#EA4335', mr: 2 }} />
+                        <Typography variant="h6">
+                          {uploadedFile?.name}
+                        </Typography>
+                      </Box>
+                    )}
+                  </Paper>
+                  
+                  <Button
+                    variant="contained"
+                    color="primary"
+                    size="large"
+                    onClick={analyzeContent}
+                    disabled={loading || !uploadedFile}
+                    startIcon={loading ? <CircularProgress size={20} color="inherit" /> : <SummarizeIcon />}
+                    sx={{ 
+                      mt: 2, 
+                      borderRadius: '20px',
+                      px: 4,
+                      py: 1.5,
+                      textTransform: 'none',
+                      fontSize: '1rem'
+                    }}
+                  >
+                    {loading ? 'Analyzing...' : 'Analyze Content'}
+                  </Button>
+                </Box>
+              )}
+            </Box>
+          )}
+        </Box>
+        
+        {/* Summary Tab */}
+        <Box role="tabpanel" hidden={activeTab !== 1} id="tabpanel-1" aria-labelledby="tab-1">
+          {activeTab === 1 && (
+            <Box>
+              {isAnalyzing ? (
+                <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', py: 4 }}>
+                  <CircularProgress size={60} sx={{ mb: 3 }} />
+                  <Typography variant="h6">Generating summary...</Typography>
+                  <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+                    This may take a moment as our AI analyzes your content
+                  </Typography>
+                </Box>
+              ) : (
+                <>
+                  {/* Summary section */}
+                  <Card 
+                    elevation={2} 
+                    sx={{ 
+                      mb: 4, 
+                      borderRadius: '20px',
+                      overflow: 'hidden'
+                    }}
+                  >
+                    <CardContent sx={{ p: 0 }}>
+                      <Box sx={{ 
+                        bgcolor: 'rgba(66, 133, 244, 0.1)', 
+                        p: 2, 
+                        display: 'flex', 
+                        alignItems: 'center'
+                      }}>
+                        <SummarizeIcon sx={{ color: '#4285F4', mr: 1 }} />
+                        <Typography variant="h6" sx={{ fontWeight: 500, color: '#4285F4' }}>
+                          AI-Generated Summary
+                        </Typography>
+                      </Box>
+                      <Divider />
+                      <Box sx={{ p: 3 }}>
+                        <Typography variant="body1" sx={{ whiteSpace: 'pre-wrap', lineHeight: 1.7 }}>
+                          {formatText(summary)}
+                        </Typography>
+                      </Box>
+                    </CardContent>
+                  </Card>
+                  
+                  {/* Extracted text section */}
+                  <Card 
+                    elevation={2} 
+                    sx={{ 
+                      mb: 4, 
+                      borderRadius: '20px',
+                      overflow: 'hidden'
+                    }}
+                  >
+                    <CardContent sx={{ p: 0 }}>
+                      <Box sx={{ 
+                        bgcolor: 'rgba(52, 168, 83, 0.1)', 
+                        p: 2, 
+                        display: 'flex', 
+                        alignItems: 'center'
+                      }}>
+                        <FormatListBulletedIcon sx={{ color: '#34A853', mr: 1 }} />
+                        <Typography variant="h6" sx={{ fontWeight: 500, color: '#34A853' }}>
+                          Extracted Text
+                        </Typography>
+                      </Box>
+                      <Divider />
+                      <Box sx={{ p: 3, maxHeight: '300px', overflow: 'auto' }}>
+                        <Typography variant="body1" sx={{ whiteSpace: 'pre-wrap', lineHeight: 1.7 }}>
+                          {formatText(extractedText)}
+                        </Typography>
+                      </Box>
+                    </CardContent>
+                  </Card>
+                  
+                  {/* Action buttons */}
+                  <Box sx={{ display: 'flex', justifyContent: 'center', gap: 2, mt: 3 }}>
+                    <Button
+                      variant="contained"
+                      color="primary"
+                      startIcon={<QuizIcon />}
+                      onClick={() => setActiveTab(2)}
+                      sx={{ 
+                        borderRadius: '20px',
+                        px: 4,
+                        py: 1.5,
+                        textTransform: 'none',
+                        fontSize: '1rem'
+                      }}
+                    >
+                      Take Quiz
+                    </Button>
+                    <Button
+                      variant="contained"
+                      color="primary"
+                      startIcon={<CalendarMonthIcon />}
+                      onClick={() => setActiveTab(3)}
+                      sx={{ 
+                        borderRadius: '20px',
+                        px: 4,
+                        py: 1.5,
+                        textTransform: 'none',
+                        fontSize: '1rem'
+                      }}
+                    >
+                      Create Study Plan
+                    </Button>
+                  </Box>
+                </>
+              )}
+            </Box>
+          )}
+        </Box>
+        
+        {/* Quiz Tab */}
+        <Box role="tabpanel" hidden={activeTab !== 2} id="tabpanel-2" aria-labelledby="tab-2">
+          {activeTab === 2 && (
+            <Box>
+              {quiz.length === 0 ? (
+                <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', py: 4 }}>
+                  <CircularProgress size={60} sx={{ mb: 3 }} />
+                  <Typography variant="h6">Generating quiz questions...</Typography>
+                </Box>
+              ) : (
+                <>
+                  <Box sx={{ mb: 4 }}>
+                    <Typography variant="h5" gutterBottom sx={{ 
+                      color: '#4285F4', 
+                      display: 'flex', 
+                      alignItems: 'center',
+                      mb: 3
+                    }}>
+                      <QuizIcon sx={{ mr: 1 }} />
+                      Test Your Knowledge
+                    </Typography>
+                    
+                    {quizSubmitted && (
+                      <Card sx={{ 
+                        mb: 4, 
+                        p: 2, 
+                        bgcolor: quizScore >= 70 ? 'rgba(52, 168, 83, 0.1)' : 'rgba(234, 67, 53, 0.1)',
+                        borderRadius: '20px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        flexDirection: 'column'
+                      }}>
+                        <Typography variant="h4" sx={{ 
+                          color: quizScore >= 70 ? '#34A853' : '#EA4335',
+                          fontWeight: 'bold',
+                          mb: 1
+                        }}>
+                          {quizScore.toFixed(0)}%
+                        </Typography>
+                        <Typography variant="body1">
+                          {quizScore >= 70 
+                            ? 'Great job! You have a good understanding of the material.' 
+                            : 'Keep studying! Review the summary to improve your score.'}
+                        </Typography>
+                      </Card>
+                    )}
+                    
+                    {quiz.map((question, qIndex) => (
+                      <Card 
+                        key={qIndex} 
+                        sx={{ 
+                          mb: 3, 
+                          borderRadius: '20px',
+                          overflow: 'hidden',
+                          boxShadow: '0 4px 12px rgba(0, 0, 0, 0.05)'
+                        }}
+                      >
+                        <CardContent sx={{ p: 0 }}>
+                          <Box sx={{ 
+                            bgcolor: 'rgba(66, 133, 244, 0.1)', 
+                            p: 2
+                          }}>
+                            <Typography variant="h6" sx={{ fontWeight: 500 }}>
+                              Question {qIndex + 1}
+                            </Typography>
+                          </Box>
+                          <Box sx={{ p: 3 }}>
+                            <Typography variant="body1" gutterBottom sx={{ mb: 2, fontWeight: 500 }}>
+                              {question.question}
+                            </Typography>
+                            
+                            <FormControl component="fieldset" sx={{ width: '100%' }}>
+                              <RadioGroup>
+                                {question.options.map((option, oIndex) => (
+                                  <FormControlLabel
+                                    key={oIndex}
+                                    value={oIndex.toString()}
+                                    control={
+                                      <Radio 
+                                        checked={selectedAnswers[qIndex] === oIndex}
+                                        onChange={() => handleAnswerSelect(qIndex, oIndex)}
+                                        disabled={quizSubmitted}
+                                        sx={{
+                                          '&.Mui-checked': {
+                                            color: quizSubmitted 
+                                              ? (oIndex === question.correctAnswer ? '#34A853' : '#EA4335')
+                                              : '#4285F4'
+                                          }
+                                        }}
+                                      />
+                                    }
+                                    label={
+                                      <Typography 
+                                        variant="body1" 
+                                        sx={{
+                                          ...(quizSubmitted && oIndex === question.correctAnswer && {
+                                            color: '#34A853',
+                                            fontWeight: 'bold',
+                                          }),
+                                          ...(quizSubmitted && 
+                                            selectedAnswers[qIndex] === oIndex && 
+                                            oIndex !== question.correctAnswer && {
+                                              color: '#EA4335',
+                                              fontWeight: 'bold',
+                                            }),
+                                        }}
+                                      >
+                                        {option}
+                                      </Typography>
+                                    }
+                                    sx={{ 
+                                      mb: 1,
+                                      p: 1,
+                                      borderRadius: '12px',
+                                      ...(quizSubmitted && oIndex === question.correctAnswer && {
+                                        bgcolor: 'rgba(52, 168, 83, 0.1)',
+                                      }),
+                                      ...(quizSubmitted && 
+                                        selectedAnswers[qIndex] === oIndex && 
+                                        oIndex !== question.correctAnswer && {
+                                          bgcolor: 'rgba(234, 67, 53, 0.1)',
+                                        }),
+                                    }}
+                                  />
+                                ))}
+                              </RadioGroup>
+                            </FormControl>
+                          </Box>
+                        </CardContent>
+                      </Card>
+                    ))}
+                    
+                    {/* Quiz action buttons */}
+                    <Box sx={{ display: 'flex', justifyContent: 'center', gap: 2, mt: 4 }}>
+                      {!quizSubmitted ? (
+                        <Button
+                          variant="contained"
+                          color="primary"
+                          startIcon={<CheckCircleIcon />}
+                          onClick={handleQuizSubmit}
+                          disabled={Object.keys(selectedAnswers).length !== quiz.length}
+                          sx={{ 
+                            borderRadius: '20px',
+                            px: 4,
+                            py: 1.5,
+                            textTransform: 'none',
+                            fontSize: '1rem'
+                          }}
+                        >
+                          Submit Answers
+                        </Button>
+                      ) : (
+                        <>
+                          <Button
+                            variant="outlined"
+                            color="primary"
+                            onClick={resetQuiz}
+                            sx={{ 
+                              borderRadius: '20px',
+                              px: 3,
+                              py: 1,
+                              textTransform: 'none'
+                            }}
+                          >
+                            Try Again
+                          </Button>
+                        </>
+                      )}
+                    </Box>
+                  </Box>
+                </>
+              )}
+            </Box>
+          )}
+        </Box>
+        
+        {/* Study Plan Tab */}
+        <Box role="tabpanel" hidden={activeTab !== 3} id="tabpanel-3" aria-labelledby="tab-3">
+          {activeTab === 3 && (
+            <Box>
+              <StudyPlanGenerator 
+                content={extractedText} 
+                onClose={() => setActiveTab(1)}
+              />
+            </Box>
+          )}
+        </Box>
       </Paper>
-      
-      {/* Break Scheduler Section */}
-      <Box sx={{ mt: 4 }}>
-        <BreakScheduler />
-      </Box>
       
       {/* Camera Dialog */}
       <Dialog 

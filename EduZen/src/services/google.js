@@ -1,23 +1,22 @@
 const CLIENT_ID = process.env.REACT_APP_GOOGLE_CLIENT_ID;
 const API_KEY = process.env.REACT_APP_GOOGLE_API_KEY;
-const DISCOVERY_DOCS = [
-  'https://www.googleapis.com/discovery/v1/apis/drive/v3/rest',
-  'https://www.googleapis.com/discovery/v1/apis/calendar/v3/rest',
-  'https://www.googleapis.com/discovery/v1/apis/docs/v1/rest',
-];
-const SCOPES = [
-  'https://www.googleapis.com/auth/drive.file',
-  'https://www.googleapis.com/auth/calendar.events',
-  'https://www.googleapis.com/auth/documents',
-];
+const DISCOVERY_DOCS = ['https://www.googleapis.com/discovery/v1/apis/calendar/v3/rest'];
 
-// Initialize the Google API client
+// Authorization scopes required by the API
+// Only request the minimal scope needed for calendar integration
+// Remove any unnecessary scopes which might trigger additional permission requests
+const SCOPES = 'https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/forms https://www.googleapis.com/auth/drive';
+
+// Google API configuration
 export const initGoogleApi = () => {
   return new Promise((resolve, reject) => {
     try {
+      console.log("Initializing Google API...");
+      console.log("Current origin:", window.location.origin);
+      
       // Check if gapi is already loaded
-      if (window.gapi && window.gapi.client) {
-        console.log('Google API already loaded');
+      if (window.gapi && window.gapi.auth2 && window.gapi.auth2.getAuthInstance()) {
+        console.log('Google API already loaded and initialized');
         resolve();
         return;
       }
@@ -29,16 +28,34 @@ export const initGoogleApi = () => {
       
       script.onload = () => {
         window.gapi.load('client:auth2', () => {
+          console.log("Google API script loaded, initializing client...");
+          
+          // Get the current origin for better error messages
+          const currentOrigin = window.location.origin;
+          console.log("Initializing with origin:", currentOrigin);
+          
+          // Use the simplest configuration possible to avoid errors
           window.gapi.client.init({
             apiKey: process.env.REACT_APP_GOOGLE_API_KEY,
             clientId: process.env.REACT_APP_GOOGLE_CLIENT_ID,
-            discoveryDocs: ['https://www.googleapis.com/discovery/v1/apis/calendar/v3/rest'],
-            scope: 'https://www.googleapis.com/auth/calendar'
+            scope: 'https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/forms https://www.googleapis.com/auth/drive',
+            discoveryDocs: [
+              'https://www.googleapis.com/discovery/v1/apis/calendar/v3/rest',
+              'https://www.googleapis.com/discovery/v1/apis/forms/v1/rest',
+              'https://www.googleapis.com/discovery/v1/apis/drive/v3/rest'
+            ]
           }).then(() => {
-            console.log('Google API initialized');
+            console.log('Google API initialized successfully');
             resolve();
           }).catch((error) => {
             console.error('Error initializing Google APIs:', error);
+            
+            // Check if this is an origin mismatch error
+            if (error.details && error.details.includes("not a valid origin")) {
+              console.error(`Your current origin (${currentOrigin}) is not authorized in Google Cloud Console.`);
+              console.error(`Please add ${currentOrigin} as an authorized JavaScript origin in your OAuth client settings.`);
+            }
+            
             // Still resolve to allow the app to function without Google features
             resolve();
           });
@@ -86,44 +103,61 @@ export const exportToGoogleDocs = async (title, content) => {
   }
 };
 
-// Create quiz in Google Forms
-export const createGoogleForm = async (title, questions) => {
+// Function to create a Google Form
+export const createGoogleForm = async (title, quizData) => {
   try {
-    const form = {
-      info: {
-        title: title,
-        documentTitle: title,
-      },
-      items: questions.map((q, index) => ({
-        title: q.question,
-        questionItem: {
-          question: {
-            required: true,
-            choiceQuestion: {
-              type: 'RADIO',
-              options: q.options.map(option => ({
-                value: option
-              })),
-            }
-          }
-        }
-      }))
-    };
-
-    const response = await fetch(`https://forms.googleapis.com/v1/forms?key=${API_KEY}`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${window.gapi.auth.getToken().access_token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(form)
-    });
-
-    if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
+    if (!window.gapi || !window.gapi.client || !window.gapi.client.forms) {
+      console.error('Google Forms API not loaded');
+      throw new Error('Google Forms API not loaded');
     }
 
-    return await response.json();
+    console.log('Creating Google Form with data:', quizData);
+
+    // Create a new form
+    const formResponse = await window.gapi.client.forms.forms.create({
+      info: {
+        title: title,
+        documentTitle: title
+      }
+    });
+
+    const formId = formResponse.result.formId;
+    console.log('Form created with ID:', formId);
+
+    // Prepare batch update requests for adding questions
+    const batchUpdateRequests = quizData.map((question, index) => {
+      return {
+        createItem: {
+          item: {
+            title: question.title || question.question, // Support both formats
+            questionItem: {
+              question: {
+                required: true,
+                choiceQuestion: {
+                  type: 'RADIO',
+                  options: question.options.map(option => ({ value: option })),
+                  shuffle: false
+                }
+              }
+            }
+          },
+          location: {
+            index: index
+          }
+        }
+      };
+    });
+
+    // Add questions to the form
+    if (batchUpdateRequests.length > 0) {
+      await window.gapi.client.forms.forms.batchUpdate({
+        formId: formId,
+        requests: batchUpdateRequests
+      });
+      console.log('Questions added to form');
+    }
+
+    return formId;
   } catch (error) {
     console.error('Error creating Google Form:', error);
     throw error;
