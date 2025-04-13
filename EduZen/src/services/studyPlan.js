@@ -1,4 +1,5 @@
 import { getGeminiResponse } from './gemini';
+import { addDays } from 'date-fns';
 
 // Generate a personalized study plan based on content and preferences
 export const generateStudyPlan = async (content, preferences) => {
